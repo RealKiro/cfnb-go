@@ -19,8 +19,8 @@
 | 带宽测速 | 依赖系统 `curl` 子进程 | **Go 原生 HTTP 下载实现**（域名解析劫持等价 `curl --resolve`） |
 | GitHub 同步 | 依赖 `git` 二进制 + `git_sync.sh` / `git_sync.ps1` 脚本 | **GitHub Contents API**，令牌写在 `config.json`，无脚本、无 git |
 | 并发模型 | 线程池 + asyncio 混用 | goroutine + 信号量，行为一致 |
-| 容器镜像 | 约 34 MB（Python 运行时 + curl + git + bash） | **约 20 MB**（Alpine + 静态二进制，无解释器） |
-| 多架构构建 | arm64 需 QEMU 模拟编译 | **Go 交叉编译，无需 QEMU**，CI 构建更快 |
+| 容器镜像 | 约 34 MB（Python 运行时 + curl + git + bash） | **6.4 MB**（Alpine + 静态二进制，实测压缩后体积） |
+| 多架构构建 | arm64 需 QEMU 模拟编译，CI 约 12 分钟 | **Go 交叉编译，无需 QEMU**，CI 约 2.5 分钟 |
 | 配置兼容 | `config.json` | **字段兼容，可直接沿用原有配置** |
 | 测试 | 无 | `go test` 单元测试覆盖解析引擎 / 过滤 / 评分逻辑 |
 
@@ -46,7 +46,7 @@
 | 📬 **微信实时通知** | 集成 WxPusher，异常 / 结果推送 |
 | 📤 **GitHub 自动同步** | Contents API 提交 `ip.txt`，无需 git |
 | 🔒 **单实例锁** | 跨平台文件锁，避免定时任务重入 |
-| 🐳 **容器化** | Alpine 多阶段构建，CI 自动测试并推送 GHCR（amd64 / arm64） |
+| 🐳 **容器化** | Alpine 多阶段构建（镜像 6.4 MB），CI 自动测试并推送 GHCR（amd64 / arm64） |
 
 ---
 
