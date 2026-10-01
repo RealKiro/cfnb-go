@@ -73,6 +73,20 @@ jobs:
           assert_contains "ghcr.io/example/cfnb-go:v9" /tmp/cfg-override.yml
           assert_contains "pull_policy: never" /tmp/cfg-override.yml
 
+          # 写入运行摘要，便于在 Actions 页面直接核对插值结果（无需登录查看日志）
+          {
+            echo "### compose 插值校验"
+            echo
+            echo '**默认（不设变量）**'
+            echo '```yaml'
+            grep -E "^[[:space:]]+(image|pull_policy):" /tmp/cfg-default.yml || true
+            echo '```'
+            echo '**覆盖变量（CFNB_IMAGE / CFNB_PULL_POLICY）**'
+            echo '```yaml'
+            grep -E "^[[:space:]]+(image|pull_policy):" /tmp/cfg-override.yml || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # ============ 阶段二：多架构构建并推送 GHCR（PR 时跳过）============
   docker:
     name: 构建并推送 GHCR
