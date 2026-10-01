@@ -129,6 +129,16 @@ func run(cfg *Config, baseDir string) {
 	candidates, httpLatencyMap, httpJitterMap := httpServerFilter(cfg, candidates, notifier)
 	sieve.recordNodes("HTTP通过", candidates)
 
+	candidates = preBandwidthMaxJitterFilter(cfg, candidates, httpJitterMap)
+	if cfg.PreBandwidthMaxJitterEnabled {
+		sieve.recordNodes("抖动过滤", candidates)
+	}
+	if len(candidates) == 0 {
+		logf("❌ 抖动过滤后已无剩余节点。可放宽 PRE_BANDWIDTH_MAX_JITTER_MS（当前 %.2f ms）或把 PRE_BANDWIDTH_MAX_JITTER_ENABLED 设为 false。",
+			cfg.PreBandwidthMaxJitterMs)
+		return
+	}
+
 	var bwResults []BandwidthResult
 	for attempt := 1; attempt <= cfg.BandwidthRetryMax; attempt++ {
 		logf("\n🚀 [带宽测速] 第 %d 轮测试...", attempt)
@@ -439,6 +449,50 @@ func preBandwidthIPv6Filter(cfg *Config, candidates []string, stacks map[string]
 	}
 	logf("🛡️  IPv6 落地过滤（测速前）：%d -> %d 个节点（剔除仅 IPv6 可达 %d 个）",
 		len(candidates), len(filtered), dropped)
+	return filtered
+}
+
+// preBandwidthMaxJitterFilter 在 HTTP 检测之后、带宽测速之前剔除「HTTP 抖动超标」的节点。
+//
+// 为什么值得单独设一道闸：抖动是同一节点多次探测延迟的标准差（毫秒），它在候选
+// 之间的区分度远大于 TCP 延迟（实测极差 92.7 倍 vs 1.4 倍），是「节点稳不稳」最
+// 直接的指标；而抖动大的节点在 penalty 里还会被 HTTP 延迟项再罚一次（两者相关系数
+// 约 +1）。与其让它占用最耗时的带宽测速名额，不如在这里直接筛掉。
+//
+// 默认关闭（PRE_BANDWIDTH_MAX_JITTER_ENABLED=false）：抖动是单轮量、波动很大
+// （实测同一 IP 相邻两轮 1.09 ms / 13.86 ms），贸然开启容易误杀。
+//
+// 数据来自 HTTP 检测返回的抖动表。未开启 HTTP 检测、或该轮 HTTP 检测整体失败
+// （降级返回空表）时拿不到抖动，此处自然退化为空操作（不会误杀）。
+func preBandwidthMaxJitterFilter(cfg *Config, candidates []string, jitterMap map[string]float64) []string {
+	if !cfg.PreBandwidthMaxJitterEnabled || len(candidates) == 0 {
+		return candidates
+	}
+	if len(jitterMap) == 0 {
+		logf("ℹ️  未取得节点抖动信息（HTTP 检测未启用或本轮失败），本轮跳过抖动过滤。")
+		return candidates
+	}
+	if cfg.PreBandwidthMaxJitterMs <= 0 {
+		logf("ℹ️  抖动阈值 %.4g 非正数，视为未设置阈值，本轮跳过抖动过滤。", cfg.PreBandwidthMaxJitterMs)
+		return candidates
+	}
+
+	limit := cfg.PreBandwidthMaxJitterMs
+	filtered := make([]string, 0, len(candidates))
+	var dropped []string
+	for _, node := range candidates {
+		jitter, ok := jitterMap[node]
+		// 取不到抖动值、或恰好等于阈值（「超过」才筛）→ 保留。
+		// 拿不到就宁可放过、也不误杀，与本项目其他过滤闸的口径一致。
+		if !ok || jitter <= limit {
+			filtered = append(filtered, node)
+			continue
+		}
+		dropped = append(dropped, fmt.Sprintf("%s（抖动 %.2f ms）", node, jitter))
+	}
+	logf("📉 抖动过滤（测速前，阈值 %.2f ms）：%d -> %d 个节点（剔除超标 %d 个）",
+		limit, len(candidates), len(filtered), len(dropped))
+	logFilterDetail("抖动超标", dropped)
 	return filtered
 }
 

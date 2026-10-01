@@ -36,6 +36,7 @@
 | ⚡ **TCP 连接测试** | 并发测延迟，可设成功率阈值 |
 | 🔍 **可用性二次检测** | API 验证代理能力，返回落地协议栈 |
 | 🔍 **HTTP 延迟与抖动检测** | 多次探测 `/cdn-cgi/trace`，统计延迟最大值与抖动（标准差），过滤非 Cloudflare 节点 |
+| 📉 **抖动过滤（可选，默认关）** | 测速前剔除抖动超过阈值的节点，提前甩掉不稳的候选，省下最耗时的带宽测速 |
 | 📶 **真实带宽测速** | 原生 HTTP 下载测速，实测吞吐量 |
 | ⚖️ **综合加权排序** | 带宽、TCP 延迟、HTTP 延迟、抖动四项权重独立可调 |
 | 🧩 **多源自适应聚合** | 支持任意格式（标准代码 / 中文名 / emoji 国旗 / JSON），裸 IP 自动补默认端口，`IP # 标签` 这类带空格的写法也能识别；源可直接写 URL，也可写 **域名**（自动 DNS 解析取 A 记录）；多源合并按 `ip:port` 去重，靠前的源优先 |
@@ -256,6 +257,8 @@ docker run -d --name cfnb-go \
 | `PRE_FILTER_BLOCKED_COUNTRIES` | `["CN"]` | 前置黑名单（测试前剔除）。默认还会并入 DNS 环节的 `BLOCKED_COUNTRIES`，见下一行 |
 | `PRE_FILTER_USE_DNS_BLOCKLIST` | `true` | 是否把 `BLOCKED_COUNTRIES` 并入前置黑名单。建议保持 `true`，否则名单不一致的国家要走完 TCP/HTTP/带宽三段才被淘汰 |
 | `PRE_BANDWIDTH_IPV6_FILTER_ENABLED` | `true` | 测速前就剔除「仅 IPv6 可达」的节点（IPv4-only 优选）。见下方《为什么默认只优选 IPv4》 |
+| `PRE_BANDWIDTH_MAX_JITTER_ENABLED` | `false` | 测速前剔除「HTTP 抖动超标」的节点。**默认不启用**。见下方《抖动过滤》 |
+| `PRE_BANDWIDTH_MAX_JITTER_MS` | `50.0` | 抖动阈值（毫秒），**超过**即剔除（等于则保留）。仅在上一项为 `true` 时生效 |
 | `ALLOWED_COUNTRIES` | `["US"]` | 白名单（需 `FILTER_COUNTRIES_ENABLED: true`） |
 | `HTTP_LATENCY_WEIGHT` / `JITTER_WEIGHT` / `SPEED_WEIGHT` | `3.0` | 综合排序权重 |
 | `CF_ENABLED` / `DNS_RECORD_TYPE` | `true` / `TXT` | Cloudflare DNS 自动更新 |
@@ -343,6 +346,34 @@ CF 官方 IP 全部通过 HTTP 检测，且 TCP 延迟明显低于第三方反�
 > ⚠️ 若你的客户端**确实有 IPv6**，或这些节点要用于 IPv6 场景，把 `PRE_BANDWIDTH_IPV6_FILTER_ENABLED` 设为 `false` 即恢复原行为。
 
 > ℹ️ 该过滤依赖可用性检测返回的协议栈信息。若 `TEST_AVAILABILITY` 为 `false`、或该轮可用性检测整体失败，拿不到协议栈时这一步会**自动跳过并在日志提示，不会误杀节点**。
+
+### 抖动过滤：剔除不稳的节点（默认关闭）
+
+**抖动**是同一节点多次探测延迟的**标准差**（毫秒，由 `HTTP_JITTER_SAMPLES` 次 `/cdn-cgi/trace` 往返计算，最少 3 次）。程序提供一道可选过滤：**抖动超过 `PRE_BANDWIDTH_MAX_JITTER_MS` 的节点，在 HTTP 检测之后、带宽测速之前被剔除**。
+
+为什么值得单列一道闸——它是所有指标里**区分度最大**的一个：
+
+| 指标 | 候选节点之间的极差（实测一轮） | 权重 `3.0` 时对 penalty 的增量 |
+| :--- | :--- | :--- |
+| 抖动 | 13.9 ~ 1285 ms（**92.7 倍**） | 0.04 ~ 3.86 |
+| HTTP 延迟 | 202 ~ 2956 ms（14.6 倍） | 0.61 ~ 8.87 |
+| TCP 延迟 | 65.5 ~ 92.6 ms（1.4 倍） | 0.20 ~ 0.28 |
+
+抖动大的节点即使勉强入选，也会被 `JITTER_WEIGHT` 与 `HTTP_LATENCY_WEIGHT` **同时**惩罚（两者相关系数约 **+1**，本质是同一个毛病）。与其让它占用最耗时的带宽测速名额，不如提前筛掉。
+
+**为什么默认关闭**：抖动是**单轮量、波动很大**——实测同一个 IP 相邻两轮分别是 `1.09 ms` 与 `13.86 ms`，相差 12.7 倍。贸然开启会用一次采样结果误杀好节点，所以需要你显式打开。
+
+抖动多少算高（经验分档，非代码值）：
+
+| 抖动 | 参考判断 |
+| :--- | :--- |
+| < 50 ms | 稳。默认阈值就在这一档 |
+| 50 ~ 200 ms | 偏高。网页可用，实时音视频会卡 |
+| > 200 ms | 明显不稳。常见于拥塞或绕远了的 anycast 节点 |
+
+> ℹ️ 阈值设为 `0` 或负数视为「未设置阈值」，该道过滤自动跳过。
+> ⚠️ 该过滤依赖 HTTP 检测返回的抖动表。若 `HTTP_TEST_ENABLED` 为 `false`、或该轮 HTTP 检测整体失败（降级），拿不到抖动时这一步会**自动跳过并在日志提示，不会误杀节点**。
+> 💡 想彻底不要波动大的节点，也可以只调 `JITTER_WEIGHT`（无需开关）——它是在排序里扣分，而这里是直接淘汰，两者可叠加使用。
 
 ### 两道国家黑名单为什么要对齐
 
@@ -470,7 +501,7 @@ cf.090227.xyz                 27          27          27         27         0   
 💡 每列为该工序结束后的剩余节点数，合计行即当轮总量。
 ```
 
-工序顺序固定为：**📥 抓取 → 🧹 去重合并 → 🚧 前置过滤 → 🔌 TCP 通过 → 🎯 候选池 → 🩺 可用通过 → 🛡 IPv6 过滤 → 🌐 HTTP 通过 → 🚀 带宽通过 → 🏆 最终入选 → 📡 DNS 写入**。后段的可用性 / HTTP / 带宽 / DNS 工序若在配置里关闭，就不会出现对应列（上面的示例日志取自加入 IPv6 过滤之前的版本，故没有该列）。
+工序顺序固定为：**📥 抓取 → 🧹 去重合并 → 🚧 前置过滤 → 🔌 TCP 通过 → 🎯 候选池 → 🩺 可用通过 → 🛡 IPv6 过滤 → 🌐 HTTP 通过 → 📉 抖动过滤 → 🚀 带宽通过 → 🏆 最终入选 → 📡 DNS 写入**。两类工序会按配置出现或消失：可用性 / HTTP / 带宽 / DNS 在配置里关闭时不出现对应列；🛡 IPv6 过滤仅在 `PRE_BANDWIDTH_IPV6_FILTER_ENABLED` 为 `true` 时出现，📉 抖动过滤仅在 `PRE_BANDWIDTH_MAX_JITTER_ENABLED` 为 `true` 时出现（上面的示例日志取自还没加这两道过滤的版本，故都没有该列）。
 
 看日志时的几个要点：
 
@@ -578,9 +609,10 @@ push main ──> ci.yml ──> 完成（success）──> release.yml
 2. **带宽测速全部失败？** 程序会降级使用 TCP 排序结果并发送微信通知；可适当调大 `BANDWIDTH_TIMEOUT`、降低 `BANDWIDTH_SIZE_MB`。
 3. **TCP 测试无节点通过？** 这是第一道硬门槛（无回退）：检查网络能否直连，或降低 `MIN_SUCCESS_RATE`。
 4. **DNS 更新记录数少于 `DNS_UPDATE_TARGET_COUNT`？** 属正常现象：端口 / IPv6 落地 / 黑名单 / 风险等级过滤会剔除部分节点，可通过增大 `BANDWIDTH_CANDIDATES` 扩大候选池（默认已设为 `300`）。日志里会分类列出被拦下的节点明细，照着看即可定位是哪条规则。
-5. **最终优选不足 `GLOBAL_TOP_N` 个？** 同上，主要是 IPv6 落地过滤的筛减（实测砍掉候选池的 59%~92%），把 `BANDWIDTH_CANDIDATES` 继续调大即可；把 `PRE_BANDWIDTH_IPV6_FILTER_ENABLED` 设为 `false` 也能恢复节点数，代价是 `ip.txt` 会混入 IPv4 客户端用不了的节点。
-6. **提示"检测到本程序已在运行"？** 单实例锁生效，避免定时任务重叠；锁文件为程序同目录 `.run.lock`。
-7. **IP 地区校准很慢？** 调低 `IP_CALIBRATION_CONCURRENCY` 或增大 `IP_CALIBRATION_MIN_INTERVAL`；不使用则设 `IP_CALIBRATION_ENABLED: false`。
+5. **最终优选不足 `GLOBAL_TOP_N` 个？** 同上，主要是 IPv6 落地过滤的筛减（实测砍掉候选池的 59%~92%），把 `BANDWIDTH_CANDIDATES` 继续调大即可；把 `PRE_BANDWIDTH_IPV6_FILTER_ENABLED` 设为 `false` 也能恢复节点数，代价是 `ip.txt` 会混入 IPv4 客户端用不了的节点。若还开了 `PRE_BANDWIDTH_MAX_JITTER_ENABLED`，它同样会削薄池子——日志里会有独立的 `📉 抖动过滤：N → M` 一行，按需放宽 `PRE_BANDWIDTH_MAX_JITTER_MS` 或关掉该开关。
+6. **开了抖动过滤后节点只剩几个？** 阈值偏严。抖动是单轮量、波动大，同一批节点换个时段结果可能差十几倍；先看日志 `📉 抖动过滤` 那行的筛减比例与明细里被拦节点的实际抖动值，再决定把 `PRE_BANDWIDTH_MAX_JITTER_MS` 放宽到多少。
+7. **提示"检测到本程序已在运行"？** 单实例锁生效，避免定时任务重叠；锁文件为程序同目录 `.run.lock`。
+8. **IP 地区校准很慢？** 调低 `IP_CALIBRATION_CONCURRENCY` 或增大 `IP_CALIBRATION_MIN_INTERVAL`；不使用则设 `IP_CALIBRATION_ENABLED: false`。
 8. **代理环境影响？** 与 Python 版一致：TCP / HTTP / 测速阶段强制直连，API 类请求（抓取、可用性、通知、GitHub）跟随系统代理；`FORCE_DIRECT: true` 可全部直连。
 9. **某个数据源明明有数据，却显示「解析出 0 个节点」？** 日志会紧接着打印 HTTP 状态、`Content-Type`、字节数和响应开头片段，照那段就能判断是空响应、HTML 拦截页还是格式不匹配（见[数据源解析出 0 个节点怎么办](#数据源解析出-0-个节点怎么办)）。程序也会把它当作抓取失败自动重试 `FETCH_MAX_RETRIES` 次，源站单次抖动不会再让整条源白跑一轮。
 10. **日志里的进度条变成了十几行？** 这是刻意的：`docker logs` / 文件 / 日志查看器不是终端，`\r` 原地刷新会把几十帧挤成一行，所以检测到非终端时改为每 10% 打一行。想要回终端那样的单行刷新，用 `docker compose logs -f` 之外的方式（如 `docker attach`）或本地直接运行即可。

@@ -49,6 +49,17 @@ type Config struct {
 	// 的节点：既省下最耗时的带宽测速，也让 ip.txt 只留 IPv4 可用节点。
 	PreBandwidthIPv6FilterEnabled bool `json:"PRE_BANDWIDTH_IPV6_FILTER_ENABLED"`
 
+	// ---------- 测速前 抖动 过滤 ----------
+	// 开启后在 HTTP 检测之后、带宽测速之前剔除「HTTP 抖动超标」的节点。
+	// 抖动是同一节点多次探测延迟的标准差（毫秒）。它在候选之间的区分度远大于
+	// TCP 延迟（实测极差 92.7 倍 vs 1.4 倍），且抖动大的节点在 penalty 里还会被
+	// HTTP 延迟项再罚一次（两者相关系数约 +1）——与其让它占用最耗时的带宽测速
+	// 名额，不如提前筛掉。
+	// 默认关闭：抖动是单轮量、波动很大（实测同一 IP 相邻两轮 1.09 / 13.86 ms），
+	// 贸然开启容易误杀。
+	PreBandwidthMaxJitterEnabled bool    `json:"PRE_BANDWIDTH_MAX_JITTER_ENABLED"`
+	PreBandwidthMaxJitterMs      float64 `json:"PRE_BANDWIDTH_MAX_JITTER_MS"`
+
 	// ---------- 微信通知 ----------
 	EnableWxPusher      bool     `json:"ENABLE_WXPUSHER"`
 	WxPusherAppToken    string   `json:"WXPUSHER_APP_TOKEN"`
@@ -193,6 +204,9 @@ func defaultConfig() Config {
 		PreFilterPorts:            []int{443},
 
 		PreBandwidthIPv6FilterEnabled: true,
+
+		PreBandwidthMaxJitterEnabled: false,
+		PreBandwidthMaxJitterMs:      50.0,
 
 		EnableWxPusher:      true,
 		WxPusherAppToken:    "your_app_token_here",

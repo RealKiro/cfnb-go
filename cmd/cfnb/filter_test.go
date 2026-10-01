@@ -117,6 +117,70 @@ func TestPreBandwidthIPv6Filter(t *testing.T) {
 	eqStrings(t, "入参不应被就地改写", candidates, raw)
 }
 
+// ==================== 测速前 抖动 过滤 ====================
+
+func TestPreBandwidthMaxJitterFilter(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.PreBandwidthMaxJitterEnabled = true
+	cfg.PreBandwidthMaxJitterMs = 50.0
+
+	candidates := []string{"1.1.1.1:443#US", "2.2.2.2:443#HK", "3.3.3.3:443#JP", "4.4.4.4:443"}
+	raw := append([]string(nil), candidates...)
+	jitter := map[string]float64{
+		"1.1.1.1:443#US": 5.0,   // 明显达标
+		"2.2.2.2:443#HK": 500.0, // 超标 → 剔除
+		"3.3.3.3:443#JP": 50.0,  // 恰好等于阈值：「超过」才筛，应保留
+		// 4.4.4.4 故意缺失：取不到抖动时不应误杀
+	}
+
+	out := captureStdout(t, func() {
+		eqStrings(t, "开启过滤", preBandwidthMaxJitterFilter(&cfg, candidates, jitter),
+			[]string{"1.1.1.1:443#US", "3.3.3.3:443#JP", "4.4.4.4:443"})
+	})
+	if !strings.Contains(out, "4 -> 3") || !strings.Contains(out, "剔除超标 1 个") {
+		t.Errorf("过滤日志应写明筛减数量，实际:\n%s", out)
+	}
+	// 明细行要能定位到具体是哪个 IP 被拦下、抖动多少
+	if !strings.Contains(out, "2.2.2.2:443#HK（抖动 500.00 ms）") {
+		t.Errorf("明细日志应列出被拦节点及其抖动值，实际:\n%s", out)
+	}
+
+	cfg.PreBandwidthMaxJitterEnabled = false
+	eqStrings(t, "关闭过滤", preBandwidthMaxJitterFilter(&cfg, candidates, jitter), candidates)
+
+	// HTTP 检测未启用/整体失败 → 抖动表为空，此时必须放行并给出提示
+	cfg.PreBandwidthMaxJitterEnabled = true
+	out = captureStdout(t, func() {
+		eqStrings(t, "无抖动信息", preBandwidthMaxJitterFilter(&cfg, candidates, map[string]float64{}), candidates)
+	})
+	if !strings.Contains(out, "跳过抖动过滤") {
+		t.Errorf("拿不到抖动信息时应提示跳过，实际:\n%s", out)
+	}
+
+	// 阈值非正数 → 视为未设置阈值，放行
+	cfg.PreBandwidthMaxJitterMs = 0
+	out = captureStdout(t, func() {
+		eqStrings(t, "阈值为 0", preBandwidthMaxJitterFilter(&cfg, candidates, jitter), candidates)
+	})
+	if !strings.Contains(out, "跳过抖动过滤") {
+		t.Errorf("阈值为 0 时应提示跳过，实际:\n%s", out)
+	}
+
+	// 全部超标 → 返回空，交由调用方中止流程（不能 panic）
+	cfg.PreBandwidthMaxJitterMs = 1.0
+	allBad := map[string]float64{
+		"1.1.1.1:443#US": 900, "2.2.2.2:443#HK": 900,
+		"3.3.3.3:443#JP": 900, "4.4.4.4:443": 900,
+	}
+	captureStdout(t, func() {
+		if got := preBandwidthMaxJitterFilter(&cfg, candidates, allBad); len(got) != 0 {
+			t.Errorf("全部超标时应返回空，实际 %v", got)
+		}
+	})
+
+	eqStrings(t, "入参不应被就地改写", candidates, raw)
+}
+
 // ==================== DNS 过滤明细日志 ====================
 
 func TestLogFilterDetail(t *testing.T) {

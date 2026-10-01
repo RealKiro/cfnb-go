@@ -49,6 +49,12 @@
     "PRE_BANDWIDTH_IPV6_FILTER_ENABLED": true,
     "_comment_PRE_BANDWIDTH_IPV6_FILTER_ENABLED": "是否在 HTTP 检测与带宽测速【之前】就剔除「仅 IPv6 可达」的节点（依据可用性 API 的 inferred_stack=ipv6_only）。开启后：① 省下最耗时的带宽测速；② ip.txt 只留 IPv4 可用节点，不再出现「排名最前的 10 个全是 ipv6_only」这种假优；③ ip.txt 与写入 DNS 的名单收敛。若你的场景是纯 IPv4 客户端（家用宽带、多数 VPS），保持 true；若确实要用仅 IPv6 可达的节点，设为 false",
 
+    "PRE_BANDWIDTH_MAX_JITTER_ENABLED": false,
+    "_comment_PRE_BANDWIDTH_MAX_JITTER_ENABLED": "是否在 HTTP 检测之后、带宽测速【之前】剔除 HTTP 抖动超标的节点（阈值见下）。抖动是多次探测延迟的标准差（毫秒），区分度远大于 TCP 延迟（实测极差 92.7 倍 vs 1.4 倍），是「节点稳不稳」最直接的指标。默认 false（不启用）：抖动是单轮量、波动很大，实测同一 IP 相邻两轮为 1.09 / 13.86 ms，贸然开启容易误杀",
+
+    "PRE_BANDWIDTH_MAX_JITTER_MS": 50.0,
+    "_comment_PRE_BANDWIDTH_MAX_JITTER_MS": "抖动阈值（毫秒）。仅当 PRE_BANDWIDTH_MAX_JITTER_ENABLED=true 时生效：抖动【超过】该值即剔除（等于该值保留）。参考：小于 50 ms 稳；50~200 ms 偏高（网页可用，实时音视频会卡）；大于 200 ms 明显不稳。设为 0 或负数视为未设置阈值，该道过滤自动跳过",
+
     "PRE_FILTER_PORT_ENABLED": true,
     "_comment_PRE_FILTER_PORT_ENABLED": "是否在 TCP 测试前过滤端口（仅保留下方指定的端口）",
 

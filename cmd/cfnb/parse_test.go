@@ -256,6 +256,12 @@ func TestConfigDefaultsAndOverride(t *testing.T) {
 	if cfg.GlobalTopN != 15 || cfg.BandwidthCandidat != 300 {
 		t.Fatalf("默认配置异常: %+v", cfg)
 	}
+	// 抖动过滤默认「关闭 + 阈值 50ms」：抖动是单轮量、波动大，
+	// 默认开启容易误杀，必须先由用户显式打开
+	if cfg.PreBandwidthMaxJitterEnabled || cfg.PreBandwidthMaxJitterMs != 50.0 {
+		t.Errorf("抖动过滤默认值应为 关闭 + 50ms，实际 enabled=%v threshold=%g",
+			cfg.PreBandwidthMaxJitterEnabled, cfg.PreBandwidthMaxJitterMs)
+	}
 	// json.Unmarshal 只覆盖出现的字段，未出现字段保持默认
 	var c = defaultConfig()
 	if err := json.Unmarshal([]byte(`{"GLOBAL_TOP_N": 30, "CF_ENABLED": false}`), &c); err != nil {
@@ -269,6 +275,10 @@ func TestConfigDefaultsAndOverride(t *testing.T) {
 	}
 	if c.BandwidthCandidat != 300 {
 		t.Errorf("未配置字段应保持默认值，BandwidthCandidat = %d", c.BandwidthCandidat)
+	}
+	if c.PreBandwidthMaxJitterEnabled || c.PreBandwidthMaxJitterMs != 50.0 {
+		t.Errorf("未配置字段应保持默认值，抖动过滤 = enabled:%v threshold:%g",
+			c.PreBandwidthMaxJitterEnabled, c.PreBandwidthMaxJitterMs)
 	}
 }
 
@@ -516,6 +526,11 @@ func TestDeployConfigJSONIsValid(t *testing.T) {
 	}
 	if !cfg.KeepUnlabeledNodes {
 		t.Logf("提示：%s 中 KEEP_UNLABELED_NODES=false，CF 官方 IP 源（cfipv4db、社区优选域名）将失效", path)
+	}
+	// 开启抖动过滤但没给有效阈值 → 该道过滤会被静默跳过，属配置矛盾，提前拦下
+	if cfg.PreBandwidthMaxJitterEnabled && cfg.PreBandwidthMaxJitterMs <= 0 {
+		t.Errorf("%s 开启了抖动过滤但 PRE_BANDWIDTH_MAX_JITTER_MS = %g，该道过滤会被跳过",
+			path, cfg.PreBandwidthMaxJitterMs)
 	}
 }
 
