@@ -1,5 +1,6 @@
 # 敏感配置与运行产物
-config.json
+/config.json
+/configs/config.json
 valid_tokens.txt
 ipinfo_cache.txt
 ip.txt

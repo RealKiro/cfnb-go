@@ -29,7 +29,12 @@ func main() {
 	}
 
 	baseDir := exeDir()
-	cfg, err := LoadConfig(filepath.Join(baseDir, "config.json"))
+	configPath := filepath.Join(baseDir, "config.json")
+	// 允许通过环境变量指定配置文件位置（容器部署时可挂载到任意路径）
+	if p := os.Getenv("CFNB_CONFIG"); p != "" {
+		configPath = p
+	}
+	cfg, err := LoadConfig(configPath)
 	if err != nil {
 		logf("错误：%v", err)
 		os.Exit(1)

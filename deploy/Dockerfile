@@ -15,7 +15,7 @@ RUN go mod download
 COPY . .
 
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/cfnb .
+    go build -trimpath -ldflags="-s -w" -o /out/cfnb ./cmd/cfnb
 
 # ============ 运行阶段：极简 Alpine（仅 ca-certificates + tzdata + 静态二进制）============
 FROM alpine:3.20
@@ -28,10 +28,12 @@ ENV TZ=Asia/Shanghai \
 
 WORKDIR /app
 
-COPY --from=builder /out/cfnb /usr/local/bin/cfnb
-COPY config.json docker-entrypoint.sh /app/
+# 二进制与配置必须同目录：程序通过 os.Executable() 定位 config.json / ip.txt
+COPY --from=builder /out/cfnb /app/cfnb
+COPY configs/config.json /app/config.json
+COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
 
-RUN chmod +x /app/docker-entrypoint.sh
+RUN chmod +x /app/cfnb /app/docker-entrypoint.sh
 
 # RUN_INTERVAL: 循环间隔秒数；0 或未设置 = 只运行一次
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

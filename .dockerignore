@@ -6,16 +6,20 @@
 *.md
 LICENSE
 
-# Docker 自身文件
-Dockerfile
-docker-compose.yml
+# Docker 自身文件（docker-entrypoint.sh 需保留在构建上下文中，其余排除）
+deploy/Dockerfile
+deploy/docker-compose.yml
+deploy/.env.example
 .dockerignore
 
 # 本地构建产物与运行产物（镜像内不需要）
 cfnb
 cfnb.exe
+cmd/cfnb/cfnb
+cmd/cfnb/cfnb.exe
 ip.txt
 *.log
 ipinfo_cache.txt
 .env
+deploy/.env
 .run.lock

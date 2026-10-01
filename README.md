@@ -56,11 +56,12 @@
 
 ```bash
 # 1. 编译（Go 1.21+）
-go build -trimpath -ldflags="-s -w" -o cfnb .
+go build -trimpath -ldflags="-s -w" -o cfnb ./cmd/cfnb
 
-# 2. 按需修改 config.json（Cloudflare / WxPusher / GitHub 令牌）
+# 2. 按需修改 configs/config.json（Cloudflare / WxPusher / GitHub 令牌）
 
-# 3. 运行一次
+# 3. 把配置放到二进制同目录后运行一次
+cp configs/config.json .
 ./cfnb             # Linux / macOS
 cfnb.exe           # Windows
 
@@ -69,7 +70,7 @@ cfnb.exe           # Windows
 ./cfnb --help
 ```
 
-程序读取**可执行文件同目录**的 `config.json`，结果写入其 `OUTPUT_FILE`（默认 `ip.txt`）。
+程序读取**可执行文件同目录**的 `config.json`（可用环境变量 `CFNB_CONFIG` 指定其他路径），结果写入其 `OUTPUT_FILE`（默认 `ip.txt`）。
 
 ### 方式二：Docker（推荐）
 
@@ -79,19 +80,20 @@ cfnb.exe           # Windows
 # 1. 进入项目目录
 cd /path/to/cfnb-go
 
-# 2. 按需修改 config.json
+# 2. 按需修改 configs/config.json
 
 # 3. 确保 ip.txt 存在（用于结果持久化挂载）
 touch ip.txt
 
 # 4.（可选）使用 GHCR 镜像而非本地构建：复制模板并填入你的地址
-cp .env.example .env && nano .env    # CFNB_IMAGE=ghcr.io/<你的用户名>/cfnb-go:latest
+cp deploy/.env.example deploy/.env && nano deploy/.env    # CFNB_IMAGE=ghcr.io/<你的用户名>/cfnb-go:latest
 
 # 5. 启动（默认每 5 分钟自动运行一次；未配置 CFNB_IMAGE 时自动本地构建）
-docker compose up -d
+#    compose 文件位于 deploy/，构建上下文为仓库根目录
+docker compose -f deploy/docker-compose.yml up -d
 
 # 6. 查看日志
-docker compose logs -f
+docker compose -f deploy/docker-compose.yml logs -f
 ```
 
 不想用 Compose 也可以直接 `docker run`（把 `<你的用户名>` 替换为仓库所属的 GitHub 用户名）：
@@ -100,7 +102,7 @@ docker compose logs -f
 docker run -d --name cfnb-go \
   -e RUN_INTERVAL=300 \
   -e TZ=Asia/Shanghai \
-  -v $(pwd)/config.json:/app/config.json \
+  -v $(pwd)/configs/config.json:/app/config.json \
   -v $(pwd)/ip.txt:/app/ip.txt \
   ghcr.io/<你的用户名>/cfnb-go:latest
 ```
@@ -108,25 +110,25 @@ docker run -d --name cfnb-go \
 | 项 | 说明 |
 | :--- | :--- |
 | 镜像地址 | `ghcr.io/<你的用户名>/cfnb-go:latest`（另有 `sha-xxxxxxx` 精确版本标签） |
-| 镜像来源 | `docker-compose.yml` **不写死镜像名**：通过环境变量 `CFNB_IMAGE` 注入（复制 `.env.example` 为 `.env` 填写）；未设置时回退为本地构建 |
+| 镜像来源 | `deploy/docker-compose.yml` **不写死镜像名**：通过环境变量 `CFNB_IMAGE` 注入（复制 `deploy/.env.example` 为 `deploy/.env` 填写）；未设置时回退为本地构建 |
 | `RUN_INTERVAL` | 循环间隔（秒）。默认 `0` = 只运行一次；compose 默认设为 `300`（5 分钟） |
-| 挂载 `config.json` | 修改参数无需重建镜像 |
-| 手动运行一次 | `docker compose run --rm cfnb`（临时忽略循环需加 `-e RUN_INTERVAL=0`） |
-| 调试 | `docker compose run --rm cfnb sh` 或 `docker compose run --rm cfnb cfnb --version` |
-| 自建镜像 | `docker build -t cfnb-go .`（多阶段构建，构建依赖不进最终镜像） |
+| 挂载 `configs/config.json` | 修改参数无需重建镜像；也可用 `CFNB_CONFIG` 环境变量指定容器内其他配置路径 |
+| 手动运行一次 | `docker compose -f deploy/docker-compose.yml run --rm cfnb`（临时忽略循环需加 `-e RUN_INTERVAL=0`） |
+| 调试 | `docker compose -f deploy/docker-compose.yml run --rm cfnb sh` |
+| 自建镜像 | `docker build -f deploy/Dockerfile -t cfnb-go .`（context 须为仓库根目录） |
 
 **Fork 用户**：CI 使用 `${{ github.repository }}` 自动定位仓库，fork 后推送到自己仓库，镜像会自动发布到 **你自己的** GHCR 命名空间（`ghcr.io/你的用户名/cfnb-go`），与原仓库互不影响：
 
 1. fork 后在仓库的 **Actions 页面** 点击启用工作流（GitHub 默认禁用 fork 的 Actions）；
 2. 推送任意提交（或手动 `Run workflow` 触发），CI 会用你自己的 `GITHUB_TOKEN` 构建并推送到你的 GHCR；
 3. 首次发布的镜像包默认 **private**，如需公开拉取请到个人主页 **Packages → cfnb-go → Package settings → Change visibility** 设为 Public；
-4. 复制 `.env.example` 为 `.env`，填写 `CFNB_IMAGE=ghcr.io/你的用户名/cfnb-go:latest`。
+4. 复制 `deploy/.env.example` 为 `deploy/.env`，填写 `CFNB_IMAGE=ghcr.io/你的用户名/cfnb-go:latest`。
 
 ---
 
 ## ⚙️ 配置说明
 
-全部参数位于 `config.json`，文件内已带逐项注释。常用项速查：
+全部参数位于 `configs/config.json`，文件内已带逐项注释。常用项速查：
 
 | 参数 | 默认值 | 说明 |
 | :--- | :--- | :--- |
@@ -183,24 +185,31 @@ docker run -d --name cfnb-go \
 
 ```
 .
-├── main.go               # 入口与主流程编排（抓取 → 过滤 → 测试 → 评分 → 输出 → 更新）
-├── config.go             # 配置结构、默认值与加载
-├── countries.go          # 中文名 / 三位码 → 两位国家码映射表
-├── parse.go              # 自适应解析引擎（文本 / JSON / emoji / 中文）
-├── nettest.go            # TCP 测试、可用性检测、HTTP 检测、带宽测速
-├── dns.go                # IP 风险等级查询 + Cloudflare DNS 批量更新
-├── ipinfo.go             # IP 地区校准（Token 轮换 / 限速 / 缓存）
-├── notify.go             # WxPusher 微信通知
-├── gitsync.go            # GitHub Contents API 同步
-├── output.go             # ip.txt 输出（广告行 / 指标附加）
-├── util.go               # HTTP 客户端、并发与进度工具
-├── lock_unix.go          # 单实例锁（flock）
-├── lock_windows.go       # 单实例锁（Windows 独占句柄）
-├── parse_test.go         # 单元测试
-├── config.json           # 配置文件（含逐项注释）
-├── Dockerfile            # Alpine 多阶段构建
-├── docker-compose.yml    # 一键部署
-└── .github/workflows/ci.yml  # CI：vet + test + 交叉编译 + 多架构推送 GHCR
+├── cmd/cfnb/                  # Go 源码（单一 main 包）
+│   ├── main.go                # 入口与主流程编排（抓取 → 过滤 → 测试 → 评分 → 输出 → 更新）
+│   ├── config.go              # 配置结构、默认值与加载
+│   ├── countries.go           # 中文名 / 三位码 → 两位国家码映射表
+│   ├── parse.go               # 自适应解析引擎（文本 / JSON / emoji / 中文）
+│   ├── nettest.go             # TCP 测试、可用性检测、HTTP 检测、带宽测速
+│   ├── dns.go                 # IP 风险等级查询 + Cloudflare DNS 批量更新
+│   ├── ipinfo.go              # IP 地区校准（Token 轮换 / 限速 / 缓存）
+│   ├── notify.go              # WxPusher 微信通知
+│   ├── gitsync.go             # GitHub Contents API 同步
+│   ├── output.go              # ip.txt 输出（广告行 / 指标附加）
+│   ├── util.go                # HTTP 客户端、并发与进度工具
+│   ├── lock_unix.go           # 单实例锁（flock）
+│   ├── lock_windows.go        # 单实例锁（Windows 独占句柄）
+│   └── parse_test.go          # 单元测试
+├── configs/
+│   └── config.json            # 配置文件（含逐项注释）
+├── deploy/                    # 部署相关
+│   ├── Dockerfile             # Alpine 多阶段构建
+│   ├── docker-compose.yml     # 一键部署（构建上下文指向仓库根）
+│   ├── docker-entrypoint.sh   # 容器入口（定时循环 / 参数透传）
+│   └── .env.example           # 镜像名等环境变量模板
+├── go.mod
+├── README.md
+└── .github/workflows/ci.yml   # CI：vet + test + 交叉编译 + 多架构推送 GHCR
 ```
 
 ---
