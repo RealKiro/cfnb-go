@@ -2,6 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -11,15 +14,15 @@ func TestExtractCountryCode(t *testing.T) {
 		want  string
 	}{
 		{"US", "US"},
-		{"us", ""},          // 小写两位代码不识别（与 Python 版一致）
-		{"USA", "US"},       // 三位代码
-		{"JP 东京", "JP"},    // 两位代码 + 中文
-		{"中国", "CN"},        // 纯中文
-		{"香港 HK", "HK"},     // 中文 + 代码
+		{"us", ""},      // 小写两位代码不识别（与 Python 版一致）
+		{"USA", "US"},   // 三位代码
+		{"JP 东京", "JP"}, // 两位代码 + 中文
+		{"中国", "CN"},    // 纯中文
+		{"香港 HK", "HK"}, // 中文 + 代码
 		{"新加坡 Singapore", "SG"},
-		{"🇺🇸", "US"},       // emoji 国旗
+		{"🇺🇸", "US"}, // emoji 国旗
 		{"🇯🇵 Japan", "JP"},
-		{"123-US", "US"},    // 带数字前缀噪声
+		{"123-US", "US"}, // 带数字前缀噪声
 		{"", ""},
 		{"unknown-label", ""},
 	}
@@ -88,6 +91,112 @@ func TestParseTextNodes(t *testing.T) {
 		if len(n) > 0 && n[0] == '[' {
 			t.Errorf("IPv6 节点应被跳过: %v", nodes)
 		}
+	}
+}
+
+// TestWithDefaultPort 验证裸 IP 补默认端口的规整逻辑
+func TestWithDefaultPort(t *testing.T) {
+	cfg := defaultConfig()
+
+	cases := []struct {
+		in     string
+		port   int
+		want   string
+		wantOK bool
+	}{
+		{"104.17.116.112:443", 443, "104.17.116.112:443", true},   // 已带端口，原样
+		{"104.17.116.112:8443", 443, "104.17.116.112:8443", true}, // 非默认端口也不动
+		{"104.17.116.112", 443, "104.17.116.112:443", true},       // 裸 IP 补端口
+		{"8.212.12.98", 443, "8.212.12.98:443", true},
+		{"104.17.116.112", 0, "", false},          // 关闭补全 → 丢弃
+		{"[2001:db8::1]:443", 443, "", false},     // IPv6 → 丢弃
+		{"example.com", 443, "", false},           // 域名 → 丢弃
+		{"104.17.116", 443, "", false},            // 残缺 IPv4 → 丢弃
+		{"104.17.116.112:abc", 443, "", false},    // 非法端口 → 丢弃
+		{"104.17.116.112:123456", 443, "", false}, // 端口超长（>5 位）→ 丢弃
+	}
+
+	for _, c := range cases {
+		cfg.BareIPDefaultPort = c.port
+		got, ok := withDefaultPort(&cfg, c.in)
+		if ok != c.wantOK || got != c.want {
+			t.Errorf("withDefaultPort(%q, port=%d) = (%q, %v)，期望 (%q, %v)",
+				c.in, c.port, got, ok, c.want, c.wantOK)
+		}
+	}
+}
+
+// TestParseBareIPSource 验证只吐裸 IP 的数据源（如 ipdb.api.030101.xyz）能被解析出节点。
+// 全部用可直接识别的国家标签，避免测试依赖可用性 API 网络请求。
+func TestParseBareIPSource(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.BareIPDefaultPort = 443
+
+	// 形如 "8.212.12.98#"（# 后国家为空）与纯 "104.17.116.112" 都应补上端口
+	nodes := parseTextNodes(&cfg, "104.17.117.1#JP\n104.17.117.2#US\n104.17.117.3#SG")
+	want := []string{"104.17.117.1:443#JP", "104.17.117.2:443#US", "104.17.117.3:443#SG"}
+	for _, w := range want {
+		found := false
+		for _, n := range nodes {
+			if n == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("裸 IP 源缺少期望节点 %q，实际: %v", w, nodes)
+		}
+	}
+
+	// 关闭补端口 → 裸 IP 应被整体丢弃
+	cfg.BareIPDefaultPort = 0
+	if got := parseTextNodes(&cfg, "104.17.117.1#JP"); len(got) != 0 {
+		t.Errorf("BareIPDefaultPort=0 时应丢弃裸 IP，实际: %v", got)
+	}
+}
+
+// TestFetchAllSourcesDedup 验证多源合并去重：
+// 同一 ip:port 无论重复出现、写成裸 IP 还是显式端口、标签是否不同，都只保留一次。
+// 用本地 httptest 服务提供数据，同时把同一个源配两遍，确认跨源也会去重。
+func TestFetchAllSourcesDedup(t *testing.T) {
+	payload := strings.Join([]string{
+		"104.17.117.1#JP",     // 裸 IP + 标签
+		"104.17.117.1#JP",     // 完全重复
+		"104.17.117.1:443#JP", // 同一节点的显式端口写法（补端口后应视为同一个）
+		"104.17.117.2#US",     // 另一个节点
+		"104.17.117.2#SG",     // 同 ip:port、不同标签 → 也应去重
+	}, "\n")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	cfg := defaultConfig()
+	cfg.BareIPDefaultPort = 443
+	cfg.FetchMaxRetries = 1
+	// 同一个源写两遍，模拟多源场景
+	cfg.AdditionalSources = []SourceConfig{{URL: srv.URL}, {URL: srv.URL}}
+
+	nodes := fetchAllSources(&cfg)
+
+	if len(nodes) != 2 {
+		t.Fatalf("期望去重后剩 2 个节点，实际 %d 个: %v", len(nodes), nodes)
+	}
+	counts := map[string]int{}
+	for _, n := range nodes {
+		counts[n]++
+	}
+	for n, c := range counts {
+		if c != 1 {
+			t.Errorf("节点 %q 出现 %d 次，应为 1 次", n, c)
+		}
+	}
+	if _, ok := counts["104.17.117.1:443#JP"]; !ok {
+		t.Errorf("去重结果缺少 104.17.117.1:443#JP，实际: %v", nodes)
+	}
+	if _, ok := counts["104.17.117.2:443#US"]; !ok {
+		t.Errorf("去重结果缺少 104.17.117.2:443#US（应保留先出现的标签），实际: %v", nodes)
 	}
 }
 

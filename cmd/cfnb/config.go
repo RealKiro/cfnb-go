@@ -64,6 +64,7 @@ type Config struct {
 
 	// ---------- 数据源 ----------
 	AdditionalSources  []SourceConfig `json:"ADDITIONAL_SOURCES"`
+	BareIPDefaultPort  int            `json:"BARE_IP_DEFAULT_PORT"`
 	FetchMaxRetries    int            `json:"FETCH_MAX_RETRIES"`
 	FetchRetryDelay    int            `json:"FETCH_RETRY_DELAY"`
 	FetchTimeout       int            `json:"FETCH_TIMEOUT"`
@@ -78,13 +79,13 @@ type Config struct {
 	IPCalibrationConcurrency int     `json:"IP_CALIBRATION_CONCURRENCY"`
 
 	// ---------- 输出与日志 ----------
-	OutputFile     string `json:"OUTPUT_FILE"`
-	EnableLogging  bool   `json:"ENABLE_LOGGING"`
-	LogFile        string `json:"LOG_FILE"`
-	ForceDirect    bool   `json:"FORCE_DIRECT"`
+	OutputFile    string `json:"OUTPUT_FILE"`
+	EnableLogging bool   `json:"ENABLE_LOGGING"`
+	LogFile       string `json:"LOG_FILE"`
+	ForceDirect   bool   `json:"FORCE_DIRECT"`
 
 	// ---------- 可用性检测 ----------
-	TestAvailability            bool `json:"TEST_AVAILABILITY"`
+	TestAvailability            bool   `json:"TEST_AVAILABILITY"`
 	AvailabilityCheckAPI        string `json:"AVAILABILITY_CHECK_API"`
 	AvailabilityTimeout         int    `json:"AVAILABILITY_TIMEOUT"`
 	AvailabilityConnectTimout   int    `json:"AVAILABILITY_CONNECT_TIMEOUT"`
@@ -97,19 +98,19 @@ type Config struct {
 	FallbackWorkers             int    `json:"FALLBACK_WORKERS"`
 
 	// ---------- HTTP 检测 ----------
-	HTTPTestEnabled         bool    `json:"HTTP_TEST_ENABLED"`
-	HTTPTestTimeout         int     `json:"HTTP_TEST_TIMEOUT"`
-	HTTPTestConnectTimeout  int     `json:"HTTP_TEST_CONNECT_TIMEOUT"`
-	HTTPTestMaxRounds       int     `json:"HTTP_TEST_MAX_ROUNDS"`
-	HTTPTestRoundDelay      int     `json:"HTTP_TEST_ROUND_DELAY"`
-	HTTPTestInnerRetry      bool    `json:"HTTP_TEST_INNER_RETRY_ENABLED"`
-	HTTPTestMaxRetries      int     `json:"HTTP_TEST_MAX_RETRIES"`
-	HTTPTestRetryDelay      int     `json:"HTTP_TEST_RETRY_DELAY"`
-	HTTPTestMethod          string  `json:"HTTP_TEST_METHOD"`
-	HTTPLatencyWeight       float64 `json:"HTTP_LATENCY_WEIGHT"`
-	JitterWeight            float64 `json:"JITTER_WEIGHT"`
-	HTTPJitterSamples       int     `json:"HTTP_JITTER_SAMPLES"`
-	HTTPTestWorkers         int     `json:"HTTP_TEST_WORKERS"`
+	HTTPTestEnabled        bool    `json:"HTTP_TEST_ENABLED"`
+	HTTPTestTimeout        int     `json:"HTTP_TEST_TIMEOUT"`
+	HTTPTestConnectTimeout int     `json:"HTTP_TEST_CONNECT_TIMEOUT"`
+	HTTPTestMaxRounds      int     `json:"HTTP_TEST_MAX_ROUNDS"`
+	HTTPTestRoundDelay     int     `json:"HTTP_TEST_ROUND_DELAY"`
+	HTTPTestInnerRetry     bool    `json:"HTTP_TEST_INNER_RETRY_ENABLED"`
+	HTTPTestMaxRetries     int     `json:"HTTP_TEST_MAX_RETRIES"`
+	HTTPTestRetryDelay     int     `json:"HTTP_TEST_RETRY_DELAY"`
+	HTTPTestMethod         string  `json:"HTTP_TEST_METHOD"`
+	HTTPLatencyWeight      float64 `json:"HTTP_LATENCY_WEIGHT"`
+	JitterWeight           float64 `json:"JITTER_WEIGHT"`
+	HTTPJitterSamples      int     `json:"HTTP_JITTER_SAMPLES"`
+	HTTPTestWorkers        int     `json:"HTTP_TEST_WORKERS"`
 
 	// ---------- DNS 更新过滤 ----------
 	FilterIPv6Availability        bool     `json:"FILTER_IPV6_AVAILABILITY"`
@@ -120,16 +121,16 @@ type Config struct {
 	DNSUpdateTargetCount          int      `json:"DNS_UPDATE_TARGET_COUNT"`
 
 	// ---------- 带宽测速 ----------
-	BandwidthSizeMB       float64 `json:"BANDWIDTH_SIZE_MB"`
-	BandwidthTimeout      int     `json:"BANDWIDTH_TIMEOUT"`
-	BandwidthRetryMax     int     `json:"BANDWIDTH_RETRY_MAX"`
-	BandwidthRetryDelay   int     `json:"BANDWIDTH_RETRY_DELAY"`
-	BandwidthURLTemplate  string  `json:"BANDWIDTH_URL_TEMPLATE"`
-	BandwidthProcessBuf   int     `json:"BANDWIDTH_PROCESS_BUFFER"`
-	BandwidthConnectTO    int     `json:"BANDWIDTH_CONNECT_TIMEOUT"`
-	SpeedWeight           float64 `json:"SPEED_WEIGHT"`
-	BandwidthWorkers      int     `json:"BANDWIDTH_WORKERS"`
-	MaxWorkers            int     `json:"MAX_WORKERS"`
+	BandwidthSizeMB      float64 `json:"BANDWIDTH_SIZE_MB"`
+	BandwidthTimeout     int     `json:"BANDWIDTH_TIMEOUT"`
+	BandwidthRetryMax    int     `json:"BANDWIDTH_RETRY_MAX"`
+	BandwidthRetryDelay  int     `json:"BANDWIDTH_RETRY_DELAY"`
+	BandwidthURLTemplate string  `json:"BANDWIDTH_URL_TEMPLATE"`
+	BandwidthProcessBuf  int     `json:"BANDWIDTH_PROCESS_BUFFER"`
+	BandwidthConnectTO   int     `json:"BANDWIDTH_CONNECT_TIMEOUT"`
+	SpeedWeight          float64 `json:"SPEED_WEIGHT"`
+	BandwidthWorkers     int     `json:"BANDWIDTH_WORKERS"`
+	MaxWorkers           int     `json:"MAX_WORKERS"`
 
 	// ---------- 重试策略 ----------
 	DNSUpdateMaxRetries  int `json:"DNS_UPDATE_MAX_RETRIES"`
@@ -153,12 +154,12 @@ type Config struct {
 	IPTxtShowLatency     bool `json:"IP_TXT_SHOW_LATENCY"`
 
 	// ---------- GitHub 同步（Go 版新增：使用 Contents API，无需 git 与脚本）----------
-	GitHubToken        string `json:"GITHUB_TOKEN"`
-	GitHubOwner        string `json:"GITHUB_OWNER"`
-	GitHubRepo         string `json:"GITHUB_REPO"`
-	GitHubBranch       string `json:"GITHUB_BRANCH"`
-	GitHubSyncPath     string `json:"GITHUB_SYNC_PATH"`
-	GitHubAPIBase      string `json:"GITHUB_API_BASE"`
+	GitHubToken    string `json:"GITHUB_TOKEN"`
+	GitHubOwner    string `json:"GITHUB_OWNER"`
+	GitHubRepo     string `json:"GITHUB_REPO"`
+	GitHubBranch   string `json:"GITHUB_BRANCH"`
+	GitHubSyncPath string `json:"GITHUB_SYNC_PATH"`
+	GitHubAPIBase  string `json:"GITHUB_API_BASE"`
 }
 
 // defaultConfig 返回内置默认值（与 Python 版 defaults 一致）
@@ -203,7 +204,10 @@ func defaultConfig() Config {
 		AdditionalSources: []SourceConfig{
 			{URL: "https://zip.cm.edu.kg/all.txt"},
 			{URL: "https://countrymerge.pages.dev/all.txt"},
+			{URL: "https://ipdb.api.030101.xyz/?type=bestproxy&country=true"},
 		},
+		// 该 API 只吐裸 IP（无端口），统一补 443；设 0 可关闭此补全行为
+		BareIPDefaultPort:  443,
 		FetchMaxRetries:    3,
 		FetchRetryDelay:    3,
 		FetchTimeout:       3,

@@ -38,7 +38,7 @@
 | 🔍 **HTTP 延迟与抖动检测** | 多次探测 `/cdn-cgi/trace`，统计延迟最大值与抖动（标准差），过滤非 Cloudflare 节点 |
 | 📶 **真实带宽测速** | 原生 HTTP 下载测速，实测吞吐量 |
 | ⚖️ **综合加权排序** | 带宽、TCP 延迟、HTTP 延迟、抖动四项权重独立可调 |
-| 🧩 **多源自适应聚合** | 支持任意格式（标准代码 / 中文名 / emoji 国旗 / JSON），统一转换 |
+| 🧩 **多源自适应聚合** | 支持任意格式（标准代码 / 中文名 / emoji 国旗 / JSON），裸 IP 自动补默认端口；多源合并按 `ip:port` 去重，靠前的源优先 |
 | ⚙️ **前置过滤（按序执行）** | TCP 测试前：端口过滤 → 黑名单过滤 → 白名单过滤 |
 | 🚫 **DNS 黑名单 / IPv6 落地过滤 / IP 风险等级过滤** | 仅作用于 DNS 更新环节，风险过滤失败自动回退 |
 | 🗺️ **IP 地区校准** | 基于 ipinfo.io 并发查询，Token 轮换 + 限速 + 缓存复用 |
@@ -219,6 +219,8 @@ docker run -d --name cfnb-go \
 | `DNS_UPDATE_TARGET_COUNT` | `15` | DNS 写入的最大记录数 |
 | `ENABLE_WXPUSHER` | `true` | WxPusher 微信通知 |
 | `MAX_WORKERS` / `BANDWIDTH_WORKERS` | `300` / `3` | 并发控制（低配设备请调小） |
+| `ADDITIONAL_SOURCES` | 3 个源 | 节点数据源列表，每项 `{ "url": ..., "enabled": true }`。**多源结果按 `ip:port` 自动去重**，保留先出现的节点，因此靠前的源优先级更高 |
+| `BARE_IP_DEFAULT_PORT` | `443` | 数据源只返回裸 IP（无端口）时补的端口；`0` = 不补并丢弃这类节点。`ipdb.api.030101.xyz` 等 API 只吐裸 IP，依赖此项才能解析 |
 
 综合得分公式（与 Python 版一致）：
 

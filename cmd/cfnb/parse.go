@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -152,19 +153,51 @@ func isIPPort(s string) bool {
 	return true
 }
 
+// isIPv4 校验纯 IPv4 字面量（不含端口、不含冒号）
+func isIPv4(s string) bool {
+	if strings.ContainsAny(s, ":#") {
+		return false
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" || len(p) > 3 {
+			return false
+		}
+		for i := 0; i < len(p); i++ {
+			if p[i] < '0' || p[i] > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// withDefaultPort 把节点规整成 ip:port：
+//   - 已带端口：原样返回
+//   - 纯 IPv4（无端口）：按 cfg.BareIPDefaultPort 补端口，端口 <=0 表示不补、丢弃
+//   - 其余（IPv6、域名、非法值）：丢弃
+//
+// 有些优选 API（如 ipdb.api.030101.xyz）只吐裸 IP，不带端口，
+// 而本项目后续所有环节（端口前置过滤、TCP 拨号、HTTP 检测）都要求 ip:port。
+func withDefaultPort(cfg *Config, s string) (string, bool) {
+	if isIPPort(s) {
+		return s, true
+	}
+	if cfg.BareIPDefaultPort > 0 && isIPv4(s) {
+		return s + ":" + strconv.Itoa(cfg.BareIPDefaultPort), true
+	}
+	return "", false
+}
+
 // parseTextNodes 解析纯文本节点列表
 func parseTextNodes(cfg *Config, text string) []string {
 	var nodes []string
 	var pending []string
 
 	for _, token := range strings.Fields(text) {
-		if isIPPort(token) && !strings.Contains(token, "#") {
-			pending = append(pending, token)
-			continue
-		}
-		if !strings.Contains(token, "#") {
-			continue
-		}
 		ipport, label, _ := strings.Cut(token, "#")
 		ipport = strings.TrimSpace(ipport)
 		label = strings.TrimSpace(label)
@@ -172,7 +205,10 @@ func parseTextNodes(cfg *Config, text string) []string {
 		if strings.HasPrefix(ipport, "[") {
 			continue
 		}
-		if !isIPPort(ipport) {
+		// 统一规整成 ip:port —— 裸 IP（无端口）在此按 BARE_IP_DEFAULT_PORT 补端口，
+		// 兼容那些只吐 IP 不给端口的优选 API，例如 ipdb.api.030101.xyz。
+		ipport, ok := withDefaultPort(cfg, ipport)
+		if !ok {
 			continue
 		}
 

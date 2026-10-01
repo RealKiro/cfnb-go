@@ -89,9 +89,16 @@
         {
             "url": "https://countrymerge.pages.dev/all.txt",
             "enabled": true
+        },
+        {
+            "url": "https://ipdb.api.030101.xyz/?type=bestproxy&country=true",
+            "enabled": true
         }
     ],
-    "_comment_ADDITIONAL_SOURCES": "所有数据源列表，每个对象包含 url 和 enabled。无需指定格式，程序完全自适应解析（支持标准代码、中文名、emoji国旗、JSON等）",
+    "_comment_ADDITIONAL_SOURCES": "所有数据源列表，每个对象包含 url 和 enabled。无需指定格式，程序完全自适应解析（支持标准代码、中文名、emoji国旗、JSON等）。多个源之间按 ip:port 自动去重（保留先出现的，因此靠前的源优先级更高）。注意 ipdb.api.030101.xyz 的 type 取值：bestcf=优选 CF 官方 IP，bestproxy=优选第三方反代 IP",
+
+    "BARE_IP_DEFAULT_PORT": 443,
+    "_comment_BARE_IP_DEFAULT_PORT": "数据源只返回裸 IP（不带端口）时补的默认端口；0=不补并丢弃这类节点。ipdb.api.030101.xyz 等 API 只吐裸 IP，依赖此项才能解析出节点",
 
     "FETCH_MAX_RETRIES": 3,
     "_comment_FETCH_MAX_RETRIES": "获取节点列表失败时的最大重试次数",
