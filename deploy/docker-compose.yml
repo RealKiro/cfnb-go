@@ -15,6 +15,7 @@
 # 镜像来源由两个环境变量决定（支持 deploy/.env，参考 deploy/.env.example）：
 #   CFNB_IMAGE        默认 ghcr.io/realkiro/cfnb-go:latest（官方镜像，开箱即用）
 #   CFNB_PULL_POLICY  默认 missing（本地无缓存时才拉取）
+# 更新频率同样走 .env：RUN_INTERVAL 留空或未设置 = 300 秒（5 分钟）
 #
 # 使用（在 deploy/ 目录下执行）：
 #   docker compose up -d            拉取官方镜像并启动
@@ -36,7 +37,9 @@ services:
     container_name: cfnb-go
     restart: unless-stopped
     environment:
-      - RUN_INTERVAL=600              # 每 10 分钟运行一次；0 = 只运行一次
+      # 更新频率：优先读 .env / 环境变量里的 RUN_INTERVAL，留空或未设置 = 300 秒（5 分钟）
+      # 想改频率建议改 deploy/.env（参考 .env.example），不动本文件；0 = 只运行一次
+      - RUN_INTERVAL=${RUN_INTERVAL:-300}
       - TZ=Asia/Shanghai
       # - CFNB_CONFIG=/app/config.json  # 可选：显式指定配置文件路径
     volumes:

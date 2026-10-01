@@ -2,7 +2,7 @@
 # docker-entrypoint.sh
 # 用法：
 #   docker run --rm ghcr.io/<用户名>/cfnb-go                      -> 运行一次后退出
-#   docker run -d -e RUN_INTERVAL=600 ghcr.io/<用户名>/cfnb-go    -> 每 600 秒循环运行
+#   docker run -d -e RUN_INTERVAL=300 ghcr.io/<用户名>/cfnb-go    -> 每 300 秒循环运行
 #   docker run --rm ghcr.io/<用户名>/cfnb-go sh                   -> 进入交互 shell（参数透传）
 #   docker run --rm ghcr.io/<用户名>/cfnb-go /app/cfnb --version  -> 直接执行二进制（参数透传）
 
