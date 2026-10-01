@@ -181,6 +181,143 @@ func TestPreBandwidthMaxJitterFilter(t *testing.T) {
 	eqStrings(t, "入参不应被就地改写", candidates, raw)
 }
 
+// ==================== TCP 延迟 过滤 ====================
+
+func TestPreTCPMaxLatencyFilter(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.TCPMaxLatencyEnabled = true
+	cfg.TCPMaxLatencyMs = 90.0
+
+	// NodeResult.Latency 单位是秒，阈值配置用毫秒 → 90ms 即 0.09s
+	results := []*NodeResult{
+		{Node: "1.1.1.1:443#US", Latency: 0.065, Success: 1}, // 65ms 达标
+		{Node: "2.2.2.2:443#HK", Latency: 0.300, Success: 1}, // 300ms 超标 → 剔除
+		{Node: "3.3.3.3:443#JP", Latency: 0.090, Success: 1}, // 恰好等于阈值 → 保留
+	}
+	raw := append([]*NodeResult(nil), results...)
+
+	names := func(rs []*NodeResult) []string {
+		out := make([]string, 0, len(rs))
+		for _, r := range rs {
+			out = append(out, r.Node)
+		}
+		return out
+	}
+
+	out := captureStdout(t, func() {
+		eqStrings(t, "开启过滤", names(preTCPMaxLatencyFilter(&cfg, results)),
+			[]string{"1.1.1.1:443#US", "3.3.3.3:443#JP"})
+	})
+	if !strings.Contains(out, "3 -> 2") || !strings.Contains(out, "剔除超标 1 个") {
+		t.Errorf("过滤日志应写明筛减数量，实际:\n%s", out)
+	}
+	// 明细行要能定位到具体是哪个 IP 被拦下、TCP 延迟多少（毫秒，不是秒）
+	if !strings.Contains(out, "2.2.2.2:443#HK（TCP 300.00 ms）") {
+		t.Errorf("明细日志应列出被拦节点及其 TCP 延迟（毫秒），实际:\n%s", out)
+	}
+
+	cfg.TCPMaxLatencyEnabled = false
+	eqStrings(t, "关闭过滤", names(preTCPMaxLatencyFilter(&cfg, results)),
+		[]string{"1.1.1.1:443#US", "2.2.2.2:443#HK", "3.3.3.3:443#JP"})
+
+	// 阈值非正数 → 视为未设置阈值，放行
+	cfg.TCPMaxLatencyEnabled = true
+	cfg.TCPMaxLatencyMs = 0
+	out = captureStdout(t, func() {
+		eqStrings(t, "阈值为 0", names(preTCPMaxLatencyFilter(&cfg, results)),
+			[]string{"1.1.1.1:443#US", "2.2.2.2:443#HK", "3.3.3.3:443#JP"})
+	})
+	if !strings.Contains(out, "跳过 TCP 延迟过滤") {
+		t.Errorf("阈值为 0 时应提示跳过，实际:\n%s", out)
+	}
+
+	// 全部超标 → 返回空，交由调用方中止流程（不能 panic）
+	cfg.TCPMaxLatencyMs = 1.0
+	captureStdout(t, func() {
+		if got := preTCPMaxLatencyFilter(&cfg, results); len(got) != 0 {
+			t.Errorf("全部超标时应返回空，实际 %d 个", len(got))
+		}
+	})
+
+	// 入参不应被就地改写（返回的是新切片，元素指针共享是预期的）
+	eqStrings(t, "入参不应被就地改写", names(results),
+		[]string{"1.1.1.1:443#US", "2.2.2.2:443#HK", "3.3.3.3:443#JP"})
+	if len(raw) != 3 {
+		t.Errorf("原始切片长度被改写: %d", len(raw))
+	}
+}
+
+// ==================== 测速前 HTTP 延迟 过滤 ====================
+
+func TestPreBandwidthMaxHTTPLatencyFilter(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.PreBandwidthMaxHTTPLatencyEnabled = true
+	cfg.PreBandwidthMaxHTTPLatencyMs = 180.0
+
+	candidates := []string{"1.1.1.1:443#US", "2.2.2.2:443#HK", "3.3.3.3:443#JP", "4.4.4.4:443"}
+	raw := append([]string(nil), candidates...)
+	latency := map[string]float64{
+		"1.1.1.1:443#US": 120.0, // 明显达标
+		"2.2.2.2:443#HK": 800.0, // 超标 → 剔除
+		"3.3.3.3:443#JP": 180.0, // 恰好等于阈值：「超过」才筛，应保留
+		// 4.4.4.4 故意缺失：取不到延迟时不应误杀
+	}
+
+	out := captureStdout(t, func() {
+		eqStrings(t, "开启过滤", preBandwidthMaxHTTPLatencyFilter(&cfg, candidates, latency),
+			[]string{"1.1.1.1:443#US", "3.3.3.3:443#JP", "4.4.4.4:443"})
+	})
+	if !strings.Contains(out, "4 -> 3") || !strings.Contains(out, "剔除超标 1 个") {
+		t.Errorf("过滤日志应写明筛减数量，实际:\n%s", out)
+	}
+	// 明细行要能定位到具体是哪个 IP 被拦下、延迟多少
+	if !strings.Contains(out, "2.2.2.2:443#HK（HTTP 800.00 ms）") {
+		t.Errorf("明细日志应列出被拦节点及其延迟值，实际:\n%s", out)
+	}
+
+	cfg.PreBandwidthMaxHTTPLatencyEnabled = false
+	eqStrings(t, "关闭过滤", preBandwidthMaxHTTPLatencyFilter(&cfg, candidates, latency), candidates)
+
+	// HTTP 检测未启用/整体失败 → 延迟表为空，此时必须放行并给出提示
+	cfg.PreBandwidthMaxHTTPLatencyEnabled = true
+	out = captureStdout(t, func() {
+		eqStrings(t, "无延迟信息", preBandwidthMaxHTTPLatencyFilter(&cfg, candidates, map[string]float64{}), candidates)
+	})
+	if !strings.Contains(out, "跳过 HTTP 延迟过滤") {
+		t.Errorf("拿不到延迟信息时应提示跳过，实际:\n%s", out)
+	}
+
+	// 阈值非正数 → 视为未设置阈值，放行
+	cfg.PreBandwidthMaxHTTPLatencyMs = 0
+	out = captureStdout(t, func() {
+		eqStrings(t, "阈值为 0", preBandwidthMaxHTTPLatencyFilter(&cfg, candidates, latency), candidates)
+	})
+	if !strings.Contains(out, "跳过 HTTP 延迟过滤") {
+		t.Errorf("阈值为 0 时应提示跳过，实际:\n%s", out)
+	}
+
+	// 全部超标 → 返回空，交由调用方中止流程（不能 panic）
+	cfg.PreBandwidthMaxHTTPLatencyMs = 1.0
+	allBad := map[string]float64{
+		"1.1.1.1:443#US": 900, "2.2.2.2:443#HK": 900,
+		"3.3.3.3:443#JP": 900, "4.4.4.4:443": 900,
+	}
+	captureStdout(t, func() {
+		if got := preBandwidthMaxHTTPLatencyFilter(&cfg, candidates, allBad); len(got) != 0 {
+			t.Errorf("全部超标时应返回空，实际 %v", got)
+		}
+	})
+
+	// 默认配置必须直接可用：开启 + 180ms
+	def := defaultConfig()
+	if !def.PreBandwidthMaxHTTPLatencyEnabled || def.PreBandwidthMaxHTTPLatencyMs != 180.0 {
+		t.Errorf("默认应为 开启 + 180ms，实际 enabled=%v threshold=%g",
+			def.PreBandwidthMaxHTTPLatencyEnabled, def.PreBandwidthMaxHTTPLatencyMs)
+	}
+
+	eqStrings(t, "入参不应被就地改写", candidates, raw)
+}
+
 // ==================== DNS 过滤明细日志 ====================
 
 func TestLogFilterDetail(t *testing.T) {

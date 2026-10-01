@@ -44,10 +44,27 @@ type Config struct {
 	PreFilterPortEnabled      bool     `json:"PRE_FILTER_PORT_ENABLED"`
 	PreFilterPorts            []int    `json:"PRE_FILTER_PORTS"`
 
+	// ---------- TCP 延迟 过滤 ----------
+	// 开启后在 TCP 测试之后、候选池之前剔除「TCP 延迟超标」的节点。
+	// TCP 延迟 = TCP 握手往返（秒，NodeResult.Latency），是唯一在测速链路最前端就
+	// 拿得到的指标：越早剔除，越能省下后续可用性检测 / IPv6 / HTTP / 带宽四段开销。
+	// 默认开启、阈值 90 ms。
+	TCPMaxLatencyEnabled bool    `json:"TCP_MAX_LATENCY_ENABLED"`
+	TCPMaxLatencyMs      float64 `json:"TCP_MAX_LATENCY_MS"`
+
 	// ---------- 测速前 IPv6 落地过滤 ----------
 	// 开启后在可用性检测之后、HTTP 与带宽测速之前剔除 inferred_stack=ipv6_only
 	// 的节点：既省下最耗时的带宽测速，也让 ip.txt 只留 IPv4 可用节点。
 	PreBandwidthIPv6FilterEnabled bool `json:"PRE_BANDWIDTH_IPV6_FILTER_ENABLED"`
+
+	// ---------- 测速前 HTTP 延迟 过滤 ----------
+	// 开启后在 HTTP 检测之后、带宽测速之前剔除「HTTP 延迟超标」的节点。
+	// HTTP 延迟 = 3 次探测 /cdn-cgi/trace 的最大值（毫秒），它同时是加权分 penalty
+	// 里的主导项（HTTP_LATENCY_WEIGHT 默认 3.0，与 SPEED_WEIGHT 同量级），
+	// 也就是「这个 IP 实际访问起来快不快」最直接的指标。
+	// 默认开启、阈值 180 ms。
+	PreBandwidthMaxHTTPLatencyEnabled bool    `json:"PRE_BANDWIDTH_MAX_HTTP_LATENCY_ENABLED"`
+	PreBandwidthMaxHTTPLatencyMs      float64 `json:"PRE_BANDWIDTH_MAX_HTTP_LATENCY_MS"`
 
 	// ---------- 测速前 抖动 过滤 ----------
 	// 开启后在 HTTP 检测之后、带宽测速之前剔除「HTTP 抖动超标」的节点。
@@ -55,8 +72,9 @@ type Config struct {
 	// TCP 延迟（实测极差 92.7 倍 vs 1.4 倍），且抖动大的节点在 penalty 里还会被
 	// HTTP 延迟项再罚一次（两者相关系数约 +1）——与其让它占用最耗时的带宽测速
 	// 名额，不如提前筛掉。
-	// 默认关闭：抖动是单轮量、波动很大（实测同一 IP 相邻两轮 1.09 / 13.86 ms），
-	// 贸然开启容易误杀。
+	// 默认开启、阈值 30 ms。抖动是单轮量、波动较大（实测同一 IP 相邻两轮
+	// 1.09 / 13.86 ms），若日志显示筛减比例过高，把 PRE_BANDWIDTH_MAX_JITTER_MS
+	// 放宽到 100~200 即可；也可把开关设回 false 完全关闭。
 	PreBandwidthMaxJitterEnabled bool    `json:"PRE_BANDWIDTH_MAX_JITTER_ENABLED"`
 	PreBandwidthMaxJitterMs      float64 `json:"PRE_BANDWIDTH_MAX_JITTER_MS"`
 
@@ -205,8 +223,14 @@ func defaultConfig() Config {
 
 		PreBandwidthIPv6FilterEnabled: true,
 
-		PreBandwidthMaxJitterEnabled: false,
-		PreBandwidthMaxJitterMs:      50.0,
+		TCPMaxLatencyEnabled: true,
+		TCPMaxLatencyMs:      90.0,
+
+		PreBandwidthMaxHTTPLatencyEnabled: true,
+		PreBandwidthMaxHTTPLatencyMs:      180.0,
+
+		PreBandwidthMaxJitterEnabled: true,
+		PreBandwidthMaxJitterMs:      30.0,
 
 		EnableWxPusher:      true,
 		WxPusherAppToken:    "your_app_token_here",

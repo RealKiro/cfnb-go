@@ -46,14 +46,26 @@
     "PRE_FILTER_USE_DNS_BLOCKLIST": true,
     "_comment_PRE_FILTER_USE_DNS_BLOCKLIST": "是否把 DNS 环节的 BLOCKED_COUNTRIES 并入前置黑名单。建议开启：两道闸名单不一致时，只会被 DNS 拦下的国家其节点仍要走完 TCP/HTTP/带宽三段才被淘汰（带宽测速约占整轮耗时一半），纯属白测。实测 HK 节点就因此白跑过一整轮",
 
+    "TCP_MAX_LATENCY_ENABLED": true,
+    "_comment_TCP_MAX_LATENCY_ENABLED": "是否在 TCP 测试之后、候选池【之前】剔除 TCP 延迟超标的节点（阈值见下）。TCP 延迟是整条链路里唯一第一步就拿得到的指标，越早剔除越省——被拦节点不再进入候选池，后续可用性检测 / IPv6 落地过滤 / HTTP 探测 / 带宽测速四段开销全免。默认 true",
+
+    "TCP_MAX_LATENCY_MS": 90.0,
+    "_comment_TCP_MAX_LATENCY_MS": "TCP 延迟阈值（毫秒）。仅当 TCP_MAX_LATENCY_ENABLED=true 时生效：延迟【超过】该值即剔除（等于该值保留）。注意是 TCP 握手往返，与下方 HTTP 延迟不是一个量级（实测 TCP 常见 65~93 ms，HTTP 常见 180~3000 ms，且两者负相关 r≈-0.85），两个阈值不要互相套用。设为 0 或负数视为未设置阈值，该道过滤自动跳过",
+
     "PRE_BANDWIDTH_IPV6_FILTER_ENABLED": true,
     "_comment_PRE_BANDWIDTH_IPV6_FILTER_ENABLED": "是否在 HTTP 检测与带宽测速【之前】就剔除「仅 IPv6 可达」的节点（依据可用性 API 的 inferred_stack=ipv6_only）。开启后：① 省下最耗时的带宽测速；② ip.txt 只留 IPv4 可用节点，不再出现「排名最前的 10 个全是 ipv6_only」这种假优；③ ip.txt 与写入 DNS 的名单收敛。若你的场景是纯 IPv4 客户端（家用宽带、多数 VPS），保持 true；若确实要用仅 IPv6 可达的节点，设为 false",
 
-    "PRE_BANDWIDTH_MAX_JITTER_ENABLED": false,
-    "_comment_PRE_BANDWIDTH_MAX_JITTER_ENABLED": "是否在 HTTP 检测之后、带宽测速【之前】剔除 HTTP 抖动超标的节点（阈值见下）。抖动是多次探测延迟的标准差（毫秒），区分度远大于 TCP 延迟（实测极差 92.7 倍 vs 1.4 倍），是「节点稳不稳」最直接的指标。默认 false（不启用）：抖动是单轮量、波动很大，实测同一 IP 相邻两轮为 1.09 / 13.86 ms，贸然开启容易误杀",
+    "PRE_BANDWIDTH_MAX_HTTP_LATENCY_ENABLED": true,
+    "_comment_PRE_BANDWIDTH_MAX_HTTP_LATENCY_ENABLED": "是否在 HTTP 检测之后、带宽测速【之前】剔除 HTTP 延迟超标的节点（阈值见下）。HTTP 延迟 = 3 次探测 /cdn-cgi/trace 的最大值（毫秒），既是「这个 IP 实际访问快不快」最直接的指标，也是综合排序惩罚项里的主导项（HTTP_LATENCY_WEIGHT 默认 3.0）。提前筛掉可省下最耗时的带宽测速。默认 true",
 
-    "PRE_BANDWIDTH_MAX_JITTER_MS": 50.0,
-    "_comment_PRE_BANDWIDTH_MAX_JITTER_MS": "抖动阈值（毫秒）。仅当 PRE_BANDWIDTH_MAX_JITTER_ENABLED=true 时生效：抖动【超过】该值即剔除（等于该值保留）。参考：小于 50 ms 稳；50~200 ms 偏高（网页可用，实时音视频会卡）；大于 200 ms 明显不稳。设为 0 或负数视为未设置阈值，该道过滤自动跳过",
+    "PRE_BANDWIDTH_MAX_HTTP_LATENCY_MS": 180.0,
+    "_comment_PRE_BANDWIDTH_MAX_HTTP_LATENCY_MS": "HTTP 延迟阈值（毫秒），默认 180（很严的一档）。仅当 PRE_BANDWIDTH_MAX_HTTP_LATENCY_ENABLED=true 时生效：延迟【超过】该值即剔除（等于该值保留）。注意该延迟是「多次采样的最大值」，量级通常明显高于 TCP 握手延迟（实测常落在 180~3000 ms），阈值给得太小会把候选筛空——请先看日志「🕐 延迟过滤」那行的筛减比例，再按实测分布调整。设为 0 或负数视为未设置阈值，该道过滤自动跳过",
+
+    "PRE_BANDWIDTH_MAX_JITTER_ENABLED": true,
+    "_comment_PRE_BANDWIDTH_MAX_JITTER_ENABLED": "是否在 HTTP 检测之后、带宽测速【之前】剔除 HTTP 抖动超标的节点（阈值见下）。抖动是多次探测延迟的标准差（毫秒），区分度远大于 TCP 延迟（实测极差 92.7 倍 vs 1.4 倍），是「节点稳不稳」最直接的指标。默认 true。若日志显示筛减比例过高，优先调大下方阈值而不是关闭开关",
+
+    "PRE_BANDWIDTH_MAX_JITTER_MS": 30.0,
+    "_comment_PRE_BANDWIDTH_MAX_JITTER_MS": "抖动阈值（毫秒），默认 30（很严的一档）。仅当 PRE_BANDWIDTH_MAX_JITTER_ENABLED=true 时生效：抖动【超过】该值即剔除（等于该值保留）。参考：小于 50 ms 稳；50~200 ms 偏高（网页可用，实时音视频会卡）；大于 200 ms 明显不稳。抖动是单轮量、波动大（实测同一 IP 相邻两轮 1.09 / 13.86 ms），先看日志「📉 抖动过滤」那行的筛减比例，若砍掉八九成候选，放宽到 100~200 ms 更合适。设为 0 或负数视为未设置阈值，该道过滤自动跳过",
 
     "PRE_FILTER_PORT_ENABLED": true,
     "_comment_PRE_FILTER_PORT_ENABLED": "是否在 TCP 测试前过滤端口（仅保留下方指定的端口）",

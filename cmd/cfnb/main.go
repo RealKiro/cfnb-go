@@ -105,6 +105,22 @@ func run(cfg *Config, baseDir string) {
 		latencyMap[r.Node] = r.Latency
 	}
 
+	// TCP 延迟是链路最前端唯一拿得到的质量指标：先在这里卡一道，
+	// 超标的节点连候选池都不进，省下后续可用性 / IPv6 / HTTP / 带宽四段开销。
+	results = preTCPMaxLatencyFilter(cfg, results)
+	if cfg.TCPMaxLatencyEnabled {
+		filtered := make([]string, 0, len(results))
+		for _, r := range results {
+			filtered = append(filtered, r.Node)
+		}
+		sieve.recordNodes("TCP延迟过滤", filtered)
+	}
+	if len(results) == 0 {
+		logf("❌ TCP 延迟过滤后已无剩余节点。可放宽 TCP_MAX_LATENCY_MS（当前 %.2f ms）或把 TCP_MAX_LATENCY_ENABLED 设为 false。",
+			cfg.TCPMaxLatencyMs)
+		return
+	}
+
 	countryNodes := groupByCountry(results)
 	candidates := buildCandidates(cfg, results, countryNodes)
 	sieve.recordNodes("候选池", candidates)
@@ -128,6 +144,16 @@ func run(cfg *Config, baseDir string) {
 
 	candidates, httpLatencyMap, httpJitterMap := httpServerFilter(cfg, candidates, notifier)
 	sieve.recordNodes("HTTP通过", candidates)
+
+	candidates = preBandwidthMaxHTTPLatencyFilter(cfg, candidates, httpLatencyMap)
+	if cfg.PreBandwidthMaxHTTPLatencyEnabled {
+		sieve.recordNodes("延迟过滤", candidates)
+	}
+	if len(candidates) == 0 {
+		logf("❌ HTTP 延迟过滤后已无剩余节点。可放宽 PRE_BANDWIDTH_MAX_HTTP_LATENCY_MS（当前 %.2f ms）或把 PRE_BANDWIDTH_MAX_HTTP_LATENCY_ENABLED 设为 false。",
+			cfg.PreBandwidthMaxHTTPLatencyMs)
+		return
+	}
 
 	candidates = preBandwidthMaxJitterFilter(cfg, candidates, httpJitterMap)
 	if cfg.PreBandwidthMaxJitterEnabled {
@@ -452,6 +478,90 @@ func preBandwidthIPv6Filter(cfg *Config, candidates []string, stacks map[string]
 	return filtered
 }
 
+// preTCPMaxLatencyFilter 在 TCP 测试之后、候选池之前剔除「TCP 延迟超标」的节点。
+//
+// 为什么值得单独设一道闸：它是整条测速链路里**唯一在第一步就拿得到**的质量指标，
+// 越早剔除越省事——被它拦下的节点不再进入候选池，后续的可用性检测、IPv6 落地过滤、
+// HTTP 探测、带宽测速四段开销全都省掉（其中带宽测速约占整轮耗时一半）。
+//
+// 默认开启（TCP_MAX_LATENCY_ENABLED=true）、阈值 90 ms。
+// 注意口径：这里比的是 NodeResult.Latency（TCP 握手往返），不是 HTTP 延迟。
+// 实测中两者的量级与方向都不同——TCP 常见 65~93 ms，而 HTTP（多次采样最大值、
+// 完整 HTTP 往返）常见 180~3000 ms，且两者在本项目里呈负相关（r ≈ -0.85），
+// 因此两个阈值不能互相套用。
+func preTCPMaxLatencyFilter(cfg *Config, results []*NodeResult) []*NodeResult {
+	if !cfg.TCPMaxLatencyEnabled || len(results) == 0 {
+		return results
+	}
+	if cfg.TCPMaxLatencyMs <= 0 {
+		logf("ℹ️  TCP 延迟阈值 %.4g 非正数，视为未设置阈值，本轮跳过 TCP 延迟过滤。", cfg.TCPMaxLatencyMs)
+		return results
+	}
+
+	// 配置用毫秒（对用户友好），NodeResult.Latency 用秒 → 换算后再比
+	limit := cfg.TCPMaxLatencyMs / 1000.0
+	kept := make([]*NodeResult, 0, len(results))
+	var dropped []string
+	for _, r := range results {
+		// 恰好等于阈值（「超过」才筛）→ 保留，与其他几道闸口径一致
+		if r.Latency <= limit {
+			kept = append(kept, r)
+			continue
+		}
+		dropped = append(dropped, fmt.Sprintf("%s（TCP %.2f ms）", r.Node, r.Latency*1000))
+	}
+	logf("📏  TCP 延迟过滤（候选池前，阈值 %.2f ms）：%d -> %d 个节点（剔除超标 %d 个）",
+		cfg.TCPMaxLatencyMs, len(results), len(kept), len(dropped))
+	logFilterDetail("TCP延迟超标", dropped)
+	return kept
+}
+
+// preBandwidthMaxHTTPLatencyFilter 在 HTTP 检测之后、带宽测速之前剔除「HTTP 延迟超标」的节点。
+//
+// 为什么值得单独设一道闸：HTTP 延迟（3 次探测 /cdn-cgi/trace 的最大值）同时是
+// 「这个 IP 实际访问快不快」最直接的指标，也是加权分 penalty 里的主导项
+// （HTTP_LATENCY_WEIGHT 默认 3.0）；而它只有在 HTTP 检测之后才知道，所以最早只能
+// 在这一步生效。提前筛掉慢节点，就不必再让它们占用最耗时的带宽测速名额。
+//
+// 默认开启（PRE_BANDWIDTH_MAX_HTTP_LATENCY_ENABLED=true）、阈值 180 ms。
+// 注意该延迟是「多次采样的最大值」，量级通常明显高于 TCP 握手延迟（本机实测常落
+// 在 180~3000 ms），阈值给得太小会把候选全部筛空——若日志显示筛减比例过高，
+// 把 PRE_BANDWIDTH_MAX_HTTP_LATENCY_MS 按实测分布放宽即可。
+//
+// 数据来自 HTTP 检测返回的延迟表。未开启 HTTP 检测、或该轮 HTTP 检测整体失败
+// （降级返回空表）时拿不到延迟，此处自然退化为空操作（不会误杀）。
+func preBandwidthMaxHTTPLatencyFilter(cfg *Config, candidates []string, latencyMap map[string]float64) []string {
+	if !cfg.PreBandwidthMaxHTTPLatencyEnabled || len(candidates) == 0 {
+		return candidates
+	}
+	if len(latencyMap) == 0 {
+		logf("ℹ️  未取得节点 HTTP 延迟信息（HTTP 检测未启用或本轮失败），本轮跳过 HTTP 延迟过滤。")
+		return candidates
+	}
+	if cfg.PreBandwidthMaxHTTPLatencyMs <= 0 {
+		logf("ℹ️  HTTP 延迟阈值 %.4g 非正数，视为未设置阈值，本轮跳过 HTTP 延迟过滤。", cfg.PreBandwidthMaxHTTPLatencyMs)
+		return candidates
+	}
+
+	limit := cfg.PreBandwidthMaxHTTPLatencyMs
+	filtered := make([]string, 0, len(candidates))
+	var dropped []string
+	for _, node := range candidates {
+		lat, ok := latencyMap[node]
+		// 取不到延迟值、或恰好等于阈值（「超过」才筛）→ 保留。
+		// 拿不到就宁可放过、也不误杀，与本项目其他过滤闸的口径一致。
+		if !ok || lat <= limit {
+			filtered = append(filtered, node)
+			continue
+		}
+		dropped = append(dropped, fmt.Sprintf("%s（HTTP %.2f ms）", node, lat))
+	}
+	logf("🕐  HTTP 延迟过滤（测速前，阈值 %.2f ms）：%d -> %d 个节点（剔除超标 %d 个）",
+		limit, len(candidates), len(filtered), len(dropped))
+	logFilterDetail("HTTP延迟超标", dropped)
+	return filtered
+}
+
 // preBandwidthMaxJitterFilter 在 HTTP 检测之后、带宽测速之前剔除「HTTP 抖动超标」的节点。
 //
 // 为什么值得单独设一道闸：抖动是同一节点多次探测延迟的标准差（毫秒），它在候选
@@ -459,8 +569,9 @@ func preBandwidthIPv6Filter(cfg *Config, candidates []string, stacks map[string]
 // 直接的指标；而抖动大的节点在 penalty 里还会被 HTTP 延迟项再罚一次（两者相关系数
 // 约 +1）。与其让它占用最耗时的带宽测速名额，不如在这里直接筛掉。
 //
-// 默认关闭（PRE_BANDWIDTH_MAX_JITTER_ENABLED=false）：抖动是单轮量、波动很大
-// （实测同一 IP 相邻两轮 1.09 ms / 13.86 ms），贸然开启容易误杀。
+// 默认开启（PRE_BANDWIDTH_MAX_JITTER_ENABLED=true）、阈值 50 ms。抖动是单轮量、
+// 波动较大（实测同一 IP 相邻两轮 1.09 ms / 13.86 ms），若日志显示筛减比例过高，
+// 把 PRE_BANDWIDTH_MAX_JITTER_MS 放宽到 100~200 即可。
 //
 // 数据来自 HTTP 检测返回的抖动表。未开启 HTTP 检测、或该轮 HTTP 检测整体失败
 // （降级返回空表）时拿不到抖动，此处自然退化为空操作（不会误杀）。
