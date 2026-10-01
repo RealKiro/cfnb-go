@@ -77,15 +77,23 @@ tar -xzf cfnb-2026.10.01-linux-amd64.tar.gz
 
 不填任何令牌也能直接跑：程序会回退到内置默认值，只是不推送通知、不改 DNS、不同步 GitHub。
 
-仓库只保存源码，**编译产物一律不进仓库**（已被 `.gitignore` 排除）。发布新版本只需打日期标签：
+仓库只保存源码，**编译产物一律不进仓库**（已被 `.gitignore` 排除）。发布是全自动的——**推送到 `main` 即发版**：
+
+```
+push main ──> CI（测试 / 交叉编译 / 推送 GHCR）──> CI 全绿后自动发布 Release
+```
+
+- **测试没过就不发版**：发布由 CI 的最终结果驱动，红灯时不会产生 Release
+- **版本号**一律用日期标签 `vYYYY.MM.DD`（东八区），不递增语义化版本号。同一天多次发布自动追加序号：`v2026.10.01` → `v2026.10.01.2` → `v2026.10.01.3`
+- 整个发版动作无需人工介入：算版本号 → 建 tag → 交叉编译 6 个平台 → 把 `config.json` 一并打包 → 创建 Release（含 `checksums.txt`）→ 给 `sha-<短SHA>` 镜像补打同一版本标签
+- **只想跑 CI、不发版**：在提交信息里写 `[skip release]`。只改 `README.md` / `LICENSE` 的提交本来就不会触发 CI，因此也不会发版
+- 需要补发历史版本或指定版本号时，仍可手动打标签（走同一套流程）：
 
 ```bash
 git tag v2026.10.02 && git push origin v2026.10.02
 ```
 
-**版本号规范**：一律用日期标签 `vYYYY.MM.DD`，不递增语义化版本号。同一天多次发布则在后面追加序号，如 `v2026.10.02.2`。
-
-CI 会自动交叉编译 6 个平台、把 `config.json` 一并打包进每个产物，并创建 Release（含 `checksums.txt`）；镜像同时打上日期标签（`ghcr.io/realkiro/cfnb-go:2026.10.02`）与 `latest`。
+镜像标签与 Release 一一对应：`latest` 跟随 `main` 最新一次成功发版，版本标签形如 `ghcr.io/realkiro/cfnb-go:2026.10.02`。
 
 ### 方式二：本地运行（单二进制）
 
@@ -333,19 +341,33 @@ CF 官方 IP 全部通过 HTTP 检测，且 TCP 延迟明显低于第三方反�
 │   └── .env.example           # 镜像名等环境变量模板
 ├── go.mod
 ├── README.md
-└── .github/workflows/ci.yml   # CI：vet + test + 交叉编译 + 多架构推送 GHCR
+└── .github/workflows/         # ci.yml：vet + test + 交叉编译 + 推送 GHCR
+                               # release.yml：CI 全绿后自动发版
 ```
 
 ---
 
 ## 🔄 CI/CD
 
-每次推送 / PR 自动执行：
+**`ci.yml`** —— 每次推送 / PR 自动执行：
 
 1. `go vet` 静态检查
 2. `go test` 单元测试（解析引擎、前置过滤、综合评分等）
 3. `linux/amd64` 与 `linux/arm64` 交叉编译验证 + 二进制 `--version` 冒烟测试
-4. 推送到 main 分支时：多架构构建镜像并推送 GHCR（PR 仅测试，不推送）
+4. `docker compose config` 插值校验（含挂载形态防回归断言）
+5. 推送到 main 分支时：多架构构建镜像并推送 GHCR（PR 仅测试，不推送）
+
+**`release.yml`** —— 由 CI 结果驱动，**不直接监听 push**：
+
+```
+push main ──> ci.yml ──> 完成（success）──> release.yml
+                            │
+                            └─ 失败 / PR / 带 [skip release] ──> 不发版
+```
+
+发布时依次完成：算日期版本号 → 建 tag 并推送 → 交叉编译 6 个平台（含 `config.json`）→ 产物自检 → 补打 GHCR 版本镜像标签 → 创建 Release。
+
+这样设计的原因是**不发拿不准的版本**：只有测试与镜像构建全绿才会产生 Release；同时 CI 已经把 `sha-<短SHA>` 镜像推上去了，补打版本标签时无需重新构建、也没有竞态。
 
 ---
 

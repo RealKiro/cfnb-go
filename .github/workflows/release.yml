@@ -1,27 +1,53 @@
 name: Release
 
-# 打 tag（v2026.10.01 形式的日期标签）自动发布；也可在 Actions 页面手动指定 tag 触发
+# 发布策略：推送到 main 即自动发版，不再需要手动打 tag。
+#
+#   push main ──> CI（测试 / 交叉编译 / 推送 GHCR）──> 本工作流（仅当 CI 全绿）
+#                                                        └─ 自动算版本号、建 tag、发 Release
+#
+# 几个刻意的设计：
+#   1. 由 workflow_run 承接 CI 结果，而不是直接监听 push。
+#      这样「测试没过就不发版」；同时 CI 的 docker 任务已经把 sha-<短SHA> 镜像推上去了，
+#      补打版本镜像标签（见最后一个步骤）不会有竞态。
+#   2. 版本号取当天日期，同日再发自动追加序号：v2026.10.01 -> v2026.10.01.2 -> .3
+#   3. tag 由本工作流用 GITHUB_TOKEN 创建并推送。GITHUB_TOKEN 触发的 push 事件
+#      不会再触发新工作流，因此不会与下面的 push:tags 形成递归发布。
+#   4. 校验「日期标签不能用 type=semver」的坑见 ci.yml 的 metadata 注释：
+#      这里自建的 tag 走 push:tags 通道时，镜像版本标签依赖 ci.yml 的 type=match。
+#   5. 只想跑 CI 不发版：提交信息里写 [skip release]。
+#      另外只改 README/LICENSE 的提交连 CI 都不会触发（ci.yml 的 paths-ignore），自然也不发版。
 on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
   push:
     tags:
       - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "发布标签（如 v2026.10.01），不存在时会基于默认分支创建"
-        required: true
+        description: "发布标签（如 v2026.10.02）；留空则按当天日期自动递增"
+        required: false
         type: string
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   release:
     name: 构建多平台二进制并发布
     runs-on: ubuntu-latest
+    # 自动通道要求：CI 成功 + 是 main 的 push（排除 PR 与 tag）+ 未标记 [skip release]
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && !contains(github.event.workflow_run.head_commit.message, '[skip release]'))
     steps:
-      - name: 检出代码
+      # workflow_run 事件下 github.sha 指向默认分支的**最新**提交，未必是触发那次 CI 的提交，
+      # 所以两个分支（workflow_run / 其它）都要显式取被发布的那个 SHA。
+      - name: 检出被发布的提交
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: 安装 Go
         uses: actions/setup-go@v5
@@ -29,16 +55,51 @@ jobs:
           go-version: "1.23"
           cache: true
 
-      - name: 确定版本标签
+      - name: 确定版本标签（同日自动递增序号）
         id: tag
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          set -eu
+
+          create_tag() {
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$1" -m "cfnb-go ${1#v}"
+            git push origin "refs/tags/$1"
+            echo "已创建并推送标签 $1"
+          }
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # 手动推 tag 的补发通道：直接用那个 tag
+            TAG="${GITHUB_REF_NAME}"
+          elif [ -n "${{ inputs.tag || '' }}" ]; then
             TAG="${{ inputs.tag }}"
           else
-            TAG="${GITHUB_REF_NAME}"
+            # 自动通道：按当天日期（东八区，与使用者的「今天」一致）生成标签
+            BASE="v$(TZ=Asia/Shanghai date +%Y.%m.%d)"
+            # 查远端已存在的同日标签：v2026.10.01（首版）/ v2026.10.01.2 / .3 ...
+            EXISTING=$(git ls-remote --tags --refs origin "refs/tags/${BASE}*" | sed 's#.*refs/tags/##')
+            MAX=0
+            for t in $EXISTING; do
+              case "$t" in
+                "$BASE")   n=1 ;;
+                "$BASE".*) n="${t##*.}" ;;
+                *)         continue ;;
+              esac
+              if [ "$n" -eq "$n" ] 2>/dev/null && [ "$n" -gt "$MAX" ]; then MAX="$n"; fi
+            done
+            if [ "$MAX" -eq 0 ]; then TAG="$BASE"; else TAG="${BASE}.$((MAX + 1))"; fi
           fi
+
+          # 手动指定/重复发布时标签可能已存在，此时直接复用它而不是报错
+          if git ls-remote --tags --refs origin "refs/tags/$TAG" | grep -q .; then
+            echo "标签 $TAG 已存在，直接复用它发布"
+          else
+            create_tag "$TAG"
+          fi
+
           echo "value=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "### 本次发布版本：\`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 交叉编译全部平台并打包（含 config.json）
         run: |
@@ -94,6 +155,28 @@ jobs:
           echo "=== 内容抽查（linux-amd64）==="
           tar -tzf "dist/cfnb-${VERSION}-linux-amd64.tar.gz"
 
+      - name: 为本次版本补打 GHCR 镜像标签
+        # 自动通道下 CI 只产出了 latest 与 sha-<短SHA>，这里把 sha 镜像补打成版本标签，
+        # 让 ghcr.io/...:<版本> 与 Release 一一对应。
+        # 只有 workflow_run 通道需要（tag 通道由 ci.yml 的 type=match 直接产出）。
+        if: github.event_name == 'workflow_run'
+        run: |
+          set -eu
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          VERSION="${{ steps.tag.outputs.version }}"
+          SHA_SHORT="$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)"
+          SRC="${IMAGE}:sha-${SHA_SHORT}"
+
+          # CI 全绿是本 job 的前置条件，所以 sha 镜像必然已存在；查不到就说明假设被打破，直接失败
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker buildx version
+          docker buildx imagetools inspect "$SRC" > /dev/null
+          echo "  OK   找到 CI 产出的镜像 $SRC"
+
+          docker buildx imagetools create -t "${IMAGE}:${VERSION}" "$SRC"
+          echo "  OK   已补打 ${IMAGE}:${VERSION}"
+          echo "已将 \`${SRC}\` 补打为 \`${IMAGE}:${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+
       - name: 生成 Release 说明
         run: |
           cat > release-body.md <<EOF
@@ -127,6 +210,7 @@ jobs:
 
           \`\`\`bash
           docker pull ghcr.io/realkiro/cfnb-go:latest
+          docker pull ghcr.io/realkiro/cfnb-go:${{ steps.tag.outputs.version }}
           \`\`\`
 
           ## 🔐 校验下载完整性
@@ -135,7 +219,7 @@ jobs:
           sha256sum -c checksums.txt --ignore-missing
           \`\`\`
 
-          所有产物均由 GitHub Actions 从本 tag 源码交叉编译，无本地构建介入。
+          所有产物均由 GitHub Actions 在 CI 全绿后自动构建，无本地构建介入。
           EOF
 
       - name: 发布到 GitHub Release
@@ -143,6 +227,7 @@ jobs:
         with:
           tag_name: ${{ steps.tag.outputs.value }}
           name: cfnb-go ${{ steps.tag.outputs.version }}
+          target_commitish: ${{ github.event.workflow_run.head_sha || github.sha }}
           body_path: release-body.md
           generate_release_notes: true
           files: |
