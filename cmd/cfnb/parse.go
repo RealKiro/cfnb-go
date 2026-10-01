@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -192,8 +194,16 @@ func withDefaultPort(cfg *Config, s string) (string, bool) {
 	return "", false
 }
 
+// labelHashRe 匹配「空白 + # + 空白」形式的标签分隔符。
+// 部分数据源把国家标签写成 "104.24.76.225 # US-SJC"（如 yuanxiawan/cfipv4db
+// 的 high_score_ips.txt）。直接按空白切分会让 "#" 与标签各自成 token，
+// 于是 IP 变成无标签节点、标签被丢弃。这里先规整成 ip#label 再切分。
+var labelHashRe = regexp.MustCompile(`\s*#\s*`)
+
 // parseTextNodes 解析纯文本节点列表
 func parseTextNodes(cfg *Config, text string) []string {
+	text = labelHashRe.ReplaceAllString(text, "#")
+
 	var nodes []string
 	var pending []string
 
@@ -220,15 +230,97 @@ func parseTextNodes(cfg *Config, text string) []string {
 	}
 
 	if len(pending) > 0 {
-		logf("%d 个节点未能识别或缺少国家，通过可用性检测 API 查询国家...", len(pending))
-		resolved := resolveCountriesBatch(cfg, pending)
-		for _, ipport := range pending {
-			if code, ok := resolved[ipport]; ok && code != "" {
-				nodes = append(nodes, ipport+"#"+code)
+		if cfg.KeepUnlabeledNodes {
+			// 保留无国家标签的节点。典型来源是 Cloudflare 官方 anycast IP 源
+			// （如 yuanxiawan/cfipv4db、社区优选域名），它们本就不提供落地国家，
+			// 而可用性 API 的语义是「该 IP 能否作为反代」，对 CF 官方 IP 恒为
+			// success=false——查询既浪费时间又会把节点全部丢弃。
+			// 这类节点改由后续 HTTP 检测（/cdn-cgi/trace 要求返回 400 且
+			// Server 头为 cloudflare）把关，它才是「是不是 CF 边缘」的实证。
+			logf("%d 个节点无国家标签，按 KEEP_UNLABELED_NODES=true 直接保留（跳过国家查询）", len(pending))
+			nodes = append(nodes, pending...)
+		} else {
+			logf("%d 个节点未能识别或缺少国家，通过可用性检测 API 查询国家...", len(pending))
+			resolved := resolveCountriesBatch(cfg, pending)
+			for _, ipport := range pending {
+				if code, ok := resolved[ipport]; ok && code != "" {
+					nodes = append(nodes, ipport+"#"+code)
+				}
 			}
 		}
 	}
 
+	return nodes
+}
+
+// ==================== 域名 / 裸 IP 直填源 ====================
+
+// isDirectSource 判断数据源是否应作为「地址直填」处理（而非 HTTP 拉取）。
+// 约定：以 http:// 或 https:// 开头的走 HTTP 拉取，其余视为域名或裸 IP。
+// 这样社区优选域名（cf.090227.xyz）可以直接写进 ADDITIONAL_SOURCES，
+// 无需额外的 type 字段——程序按写法自适应。
+func isDirectSource(raw string) bool {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return false
+	}
+	lower := strings.ToLower(s)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return false
+	}
+	if strings.ContainsAny(s, "/ \t?#") {
+		return false
+	}
+	host, _, _ := strings.Cut(s, ":")
+	if host == "" {
+		return false
+	}
+	return isIPv4(host) || strings.Contains(host, ".")
+}
+
+// resolveDirectSource 把「域名或裸 IP」直填源展开成节点列表。
+// 域名会查询全部 A 记录（仅取 IPv4），端口取源内自带端口或 BARE_IP_DEFAULT_PORT。
+// 这类源（如社区优选域名 cf.090227.xyz / cmcc.090227.xyz）背后是维护者
+// 动态更新的优选 IP，每次解析都可能得到不同的一批地址。
+func resolveDirectSource(cfg *Config, spec string) []string {
+	host, portStr, hasPort := strings.Cut(spec, ":")
+	host = strings.TrimSpace(host)
+
+	port := cfg.BareIPDefaultPort
+	if hasPort && portStr != "" {
+		if p, err := strconv.Atoi(portStr); err == nil && p > 0 && p <= 65535 {
+			port = p
+		}
+	}
+	if port <= 0 {
+		logf("数据源 %s 未能确定端口（BARE_IP_DEFAULT_PORT=%d），跳过。", spec, cfg.BareIPDefaultPort)
+		return nil
+	}
+	portS := strconv.Itoa(port)
+
+	if isIPv4(host) {
+		return []string{host + ":" + portS}
+	}
+
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		logf("DNS 解析 %s 失败: %v", host, err)
+		return nil
+	}
+
+	var nodes []string
+	seen := map[string]struct{}{}
+	for _, a := range addrs {
+		if !isIPv4(a) {
+			continue // 只取 IPv4：后续 TCP 拨号与 HTTP 检测均基于 IPv4
+		}
+		node := a + ":" + portS
+		if _, dup := seen[node]; dup {
+			continue
+		}
+		seen[node] = struct{}{}
+		nodes = append(nodes, node)
+	}
 	return nodes
 }
 
@@ -386,6 +478,16 @@ func resolveCountriesBatch(cfg *Config, ipports []string) map[string]string {
 func fetchAdditionalSource(cfg *Config, client *http.Client, rawURL string) []string {
 	if rawURL == "" {
 		return nil
+	}
+
+	// 域名 / 裸 IP 直填源：不做 HTTP 拉取，直接解析成节点。
+	// 社区优选域名（cf.090227.xyz 等）必须走这条路径——HTTP 请求它只会拿到
+	// 一个网页，解析结果是 0 个节点，属于静默失效。
+	if isDirectSource(rawURL) {
+		logf("数据源 %s 为域名/裸 IP 直填，解析候选 IP ...", rawURL)
+		nodes := resolveDirectSource(cfg, rawURL)
+		logf("从 %s 解析出 %d 个节点。", rawURL, len(nodes))
+		return nodes
 	}
 
 	for attempt := 1; attempt <= cfg.FetchMaxRetries; attempt++ {

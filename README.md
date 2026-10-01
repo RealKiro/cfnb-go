@@ -38,7 +38,7 @@
 | 🔍 **HTTP 延迟与抖动检测** | 多次探测 `/cdn-cgi/trace`，统计延迟最大值与抖动（标准差），过滤非 Cloudflare 节点 |
 | 📶 **真实带宽测速** | 原生 HTTP 下载测速，实测吞吐量 |
 | ⚖️ **综合加权排序** | 带宽、TCP 延迟、HTTP 延迟、抖动四项权重独立可调 |
-| 🧩 **多源自适应聚合** | 支持任意格式（标准代码 / 中文名 / emoji 国旗 / JSON），裸 IP 自动补默认端口；多源合并按 `ip:port` 去重，靠前的源优先 |
+| 🧩 **多源自适应聚合** | 支持任意格式（标准代码 / 中文名 / emoji 国旗 / JSON），裸 IP 自动补默认端口，`IP # 标签` 这类带空格的写法也能识别；源可直接写 URL，也可写 **域名**（自动 DNS 解析取 A 记录）；多源合并按 `ip:port` 去重，靠前的源优先 |
 | ⚙️ **前置过滤（按序执行）** | TCP 测试前：端口过滤 → 黑名单过滤 → 白名单过滤 |
 | 🚫 **DNS 黑名单 / IPv6 落地过滤 / IP 风险等级过滤** | 仅作用于 DNS 更新环节，风险过滤失败自动回退 |
 | 🗺️ **IP 地区校准** | 基于 ipinfo.io 并发查询，Token 轮换 + 限速 + 缓存复用 |
@@ -219,8 +219,54 @@ docker run -d --name cfnb-go \
 | `DNS_UPDATE_TARGET_COUNT` | `15` | DNS 写入的最大记录数 |
 | `ENABLE_WXPUSHER` | `true` | WxPusher 微信通知 |
 | `MAX_WORKERS` / `BANDWIDTH_WORKERS` | `300` / `3` | 并发控制（低配设备请调小） |
-| `ADDITIONAL_SOURCES` | 3 个源 | 节点数据源列表，每项 `{ "url": ..., "enabled": true }`。**多源结果按 `ip:port` 自动去重**，保留先出现的节点，因此靠前的源优先级更高 |
-| `BARE_IP_DEFAULT_PORT` | `443` | 数据源只返回裸 IP（无端口）时补的端口；`0` = 不补并丢弃这类节点。`ipdb.api.030101.xyz` 等 API 只吐裸 IP，依赖此项才能解析 |
+| `ADDITIONAL_SOURCES` | 7 个源 | 节点数据源列表，每项 `{ "url": ..., "enabled": true }`。**多源结果按 `ip:port` 自动去重**，保留先出现的节点，因此靠前的源优先级更高。支持两种写法，见下方《数据源写法》 |
+| `BARE_IP_DEFAULT_PORT` | `443` | 数据源只返回裸 IP（无端口）时补的端口；`0` = 不补并丢弃这类节点。`ipdb.api.030101.xyz`、域名直填源等都依赖此项 |
+| `KEEP_UNLABELED_NODES` | `true` | 是否保留「无国家标签」的节点。见下方《为什么必须开启 `KEEP_UNLABELED_NODES`》 |
+
+### 数据源写法
+
+`ADDITIONAL_SOURCES` 里每项按**写法**自适应，不需要额外的类型字段：
+
+| 写法 | 处理方式 | 例子 |
+| :--- | :--- | :--- |
+| 以 `http://` / `https://` 开头 | 按 URL 拉取，自适应解析纯文本 / JSON（标准代码、中文名、emoji 国旗均可） | `"https://zip.cm.edu.kg/all.txt"` |
+| 其余（域名 / 裸 IP） | **直填**：对该域名做 DNS 解析，取其**全部 A 记录**当候选；IP 形式则原样使用 | `"cf.090227.xyz"`、`"cmcc.090227.xyz:8443"`、`"1.2.3.4"` |
+
+直填源每次解析都可能得到不同的一批地址（社区优选域名背后是维护者动态更新的 IP），端口取源内自带端口或 `BARE_IP_DEFAULT_PORT`。
+
+当前默认的 7 个源：
+
+| 源 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| `zip.cm.edu.kg/all.txt` | URL | 综合大列表（约 1.5 万条），带国家标签 |
+| `countrymerge.pages.dev/all.txt` | URL | 综合列表（约 1.6 千条），带国家标签 |
+| `ipdb.api.030101.xyz?type=bestproxy` | URL | 第三方反代 IP（`type=bestcf` 则为 CF 官方 IP） |
+| `yuanxiawan/cfipv4db` | URL | 韩国 VPS 扫描的高分 IP，更新频繁，**全是 CF 官方 anycast IP** |
+| `cmliu/WorkerVless2sub` | URL | 整理过的优选地址列表，带国家标签 |
+| `cf.090227.xyz` | 域名直填 | 老牌优选域名，三网自适应 |
+| `cmcc.090227.xyz` | 域名直填 | 同上，移动线路专门优化 |
+
+### 为什么必须开启 `KEEP_UNLABELED_NODES`
+
+这是用上 CF 官方 IP 源的**前提**，不开等于白加：
+
+1. `cfipv4db`、`cf.090227.xyz` 等源提供的是 **Cloudflare 官方 anycast IP**（`104.16/104.17/104.19/162.159/198.41` 等段），它们**没有也能没有**国家标签——落地区域由 CF 内部路由决定。
+2. 无标签节点原本会走 `AVAILABILITY_CHECK_API` 查国家。但那个 API 的语义是**「该 IP 能否作为反代」**，实测对上述 CF 官方 IP **恒返回 `success: false`**，于是节点在筛选之初就被整批丢弃。
+3. 开启后，无标签节点**跳过该 API**，直接进入 TCP 与 HTTP 检测，最终由 HTTP 检测（请求 `/cdn-cgi/trace`，要求返回 `400` 且 `Server: cloudflare`）判定真伪——**这才是「是不是 CF 边缘」的实证**，验证强度不降低。
+
+实测（本机，2026-10）：
+
+```
+104.16.144.130   400|cloudflare   TCP 0.352s
+104.19.50.155    400|cloudflare   TCP 0.348s
+198.41.208.128   400|cloudflare   TCP 0.222s
+104.27.126.189   400|cloudflare   TCP 0.373s
+150.230.206.130  400|cloudflare   TCP 1.278s   ← 第三方反代，作为对照
+```
+
+CF 官方 IP 全部通过 HTTP 检测，且 TCP 延迟明显低于第三方反代。
+
+> ⚠️ 代价：无国家标签的节点无法参与 `BLOCKED_COUNTRIES`（仅 DNS 阶段）的国家黑名单过滤——因为不知道它落在哪。若你的场景强依赖落地国家筛选，请把此项设为 `false` 并移除 CF 官方 IP 源。
 
 综合得分公式（与 Python 版一致）：
 
@@ -319,6 +365,9 @@ docker run -d --name cfnb-go \
 
 - 原项目（Python 版）：[xinyitang3/cfnb](https://github.com/xinyitang3/cfnb)
 - 节点数据源 & 检测 API：[cmliussss](https://github.com/cmliussss)
+- 高分 IP 列表：[yuanxiawan/cfipv4db](https://github.com/yuanxiawan/cfipv4db)
+- 优选地址列表：[cmliu/WorkerVless2sub](https://github.com/cmliu/WorkerVless2sub)
+- 社区优选域名：`cf.090227.xyz` / `cmcc.090227.xyz`（[090227.xyz](https://090227.xyz)）
 - IP 风险检测 API：[ipapi.is](https://ipapi.is/)
 - IP 地区校准：[ipinfo.io](https://ipinfo.io/)
 - 微信通知服务：[WxPusher](https://wxpusher.zjiecode.com/)

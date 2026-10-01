@@ -2,10 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExtractCountryCode(t *testing.T) {
@@ -348,6 +352,148 @@ func TestScoreAndSelectPerCountry(t *testing.T) {
 	}
 	if got[0] != "1.1.1.2:443#US" || got[1] != "1.1.1.3:443#JP" {
 		t.Errorf("分国家模式选择结果异常: %v", got)
+	}
+}
+
+// TestParseSpacedLabel 验证 "IP # LABEL" 这种带空格的标签写法能被正确识别。
+// yuanxiawan/cfipv4db 的 high_score_ips.txt 就是这种格式（"104.24.76.225 # US-SJC"）：
+// 若不先规整，"#" 与标签会被空白切成独立 token，IP 会退化成无标签节点、标签丢失。
+func TestParseSpacedLabel(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.KeepUnlabeledNodes = true
+
+	text := "104.24.76.225 # US-SJC\n162.159.147.80 # US-SJC\n108.162.195.238 # UNK-UNK"
+	nodes := parseTextNodes(&cfg, text)
+
+	if len(nodes) != 3 {
+		t.Fatalf("期望 3 个节点，实际 %d 个: %v", len(nodes), nodes)
+	}
+
+	got := map[string]bool{}
+	for _, n := range nodes {
+		got[n] = true
+	}
+	// US-SJC 应被识别出 US 并补上 443；UNK-UNK 认不出国家 → 保留为无标签形式
+	for _, w := range []string{"104.24.76.225:443#US", "162.159.147.80:443#US", "108.162.195.238:443"} {
+		if !got[w] {
+			t.Errorf("缺少期望节点 %q，实际结果: %v", w, nodes)
+		}
+	}
+}
+
+// TestKeepUnlabeledNodes 验证 KEEP_UNLABELED_NODES 开关的两侧行为。
+func TestKeepUnlabeledNodes(t *testing.T) {
+	// 关闭时：无标签节点走可用性 API 查询国家，这里用返回空结果的假 API 模拟"查不出"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"probe_results":{}}`)
+	}))
+	defer srv.Close()
+
+	off := defaultConfig()
+	off.KeepUnlabeledNodes = false
+	off.AvailabilityCheckAPI = srv.URL
+	if got := parseTextNodes(&off, "104.17.0.1"); len(got) != 0 {
+		t.Errorf("开关关闭且 API 查不出国家时，节点应被丢弃，实际: %v", got)
+	}
+
+	on := defaultConfig()
+	on.KeepUnlabeledNodes = true
+	got := parseTextNodes(&on, "104.17.0.1")
+	if len(got) != 1 || got[0] != "104.17.0.1:443" {
+		t.Errorf("开关开启时应保留为 ip:port 形式，实际: %v", got)
+	}
+}
+
+// TestCheckAvailabilitySkipsUnlabeled 验证开启开关后，无标签节点不再走「反代可用性」API。
+// API 指向一个必然连不上的地址：若仍发起请求，结果必为 OK=false。
+func TestCheckAvailabilitySkipsUnlabeled(t *testing.T) {
+	cfg := defaultConfig()
+	client := newHTTPClient(time.Second, time.Second, true)
+	cfg.AvailabilityCheckAPI = "http://127.0.0.1:9/never"
+	cfg.AvailabilityInnerRetry = false // 关闭内部重试，避免测试等待
+
+	cfg.KeepUnlabeledNodes = true
+	if res := checkAvailability(&cfg, client, "104.17.0.1:443"); !res.OK {
+		t.Errorf("无标签节点应跳过反代可用性检测（OK=true），实际: %+v", res)
+	}
+
+	cfg.KeepUnlabeledNodes = false
+	if res := checkAvailability(&cfg, client, "104.17.0.1:443"); res.OK {
+		t.Errorf("关闭开关时仍应走 API 检测（此处 API 不可达，应为 OK=false），实际: %+v", res)
+	}
+}
+
+// TestIsDirectSource 验证「域名 / 裸 IP 直填源」的识别规则
+func TestIsDirectSource(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"https://zip.cm.edu.kg/all.txt", false},
+		{"http://example.com/list.txt", false},
+		{"https://ipdb.api.030101.xyz/?type=bestproxy&country=true", false},
+		{"cf.090227.xyz", true},
+		{"cmcc.090227.xyz", true},
+		{"cf.090227.xyz:8443", true},
+		{"1.2.3.4", true},
+		{"1.2.3.4:8443", true},
+		{"example.com/path", false}, // 带路径 → 不按纯域名处理
+		{"notadomain", false},       // 不含点 → 不按域名处理
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isDirectSource(c.in); got != c.want {
+			t.Errorf("isDirectSource(%q) = %v，期望 %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestResolveDirectSource 验证直填源解析（走裸 IP 分支，不依赖 DNS 网络）
+func TestResolveDirectSource(t *testing.T) {
+	cfg := defaultConfig()
+
+	if got := resolveDirectSource(&cfg, "1.2.3.4:8443"); len(got) != 1 || got[0] != "1.2.3.4:8443" {
+		t.Errorf("带端口的裸 IP 应原样使用，实际: %v", got)
+	}
+	if got := resolveDirectSource(&cfg, "1.2.3.4"); len(got) != 1 || got[0] != "1.2.3.4:443" {
+		t.Errorf("裸 IP 应补默认端口，实际: %v", got)
+	}
+
+	cfg.BareIPDefaultPort = 0
+	if got := resolveDirectSource(&cfg, "1.2.3.4"); len(got) != 0 {
+		t.Errorf("BARE_IP_DEFAULT_PORT=0 且源内无端口时应返回空，实际: %v", got)
+	}
+}
+
+// TestDeployConfigJSONIsValid 校验随仓库分发的 deploy/app/config.json。
+// 它是 Release 产物与容器默认配置的来源；一旦写坏，程序会静默回退内置默认值
+// 而不报错，问题会被完全掩盖，所以这里显式把关。
+func TestDeployConfigJSONIsValid(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "app", "config.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取 %s 失败: %v", path, err)
+	}
+
+	var cfg Config
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("%s 不是合法 JSON 配置: %v", path, err)
+	}
+	if len(cfg.AdditionalSources) == 0 {
+		t.Errorf("%s 的 ADDITIONAL_SOURCES 为空", path)
+	}
+	for _, s := range cfg.AdditionalSources {
+		if strings.TrimSpace(s.URL) == "" {
+			t.Errorf("%s 中存在 url 为空的数据源项", path)
+		}
+	}
+	if cfg.BareIPDefaultPort <= 0 {
+		t.Errorf("%s 的 BARE_IP_DEFAULT_PORT 应大于 0（裸 IP / 域名直填源依赖它），实际 %d",
+			path, cfg.BareIPDefaultPort)
+	}
+	if !cfg.KeepUnlabeledNodes {
+		t.Logf("提示：%s 中 KEEP_UNLABELED_NODES=false，CF 官方 IP 源（cfipv4db、社区优选域名）将失效", path)
 	}
 }
 

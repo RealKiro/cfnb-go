@@ -65,6 +65,7 @@ type Config struct {
 	// ---------- 数据源 ----------
 	AdditionalSources  []SourceConfig `json:"ADDITIONAL_SOURCES"`
 	BareIPDefaultPort  int            `json:"BARE_IP_DEFAULT_PORT"`
+	KeepUnlabeledNodes bool           `json:"KEEP_UNLABELED_NODES"`
 	FetchMaxRetries    int            `json:"FETCH_MAX_RETRIES"`
 	FetchRetryDelay    int            `json:"FETCH_RETRY_DELAY"`
 	FetchTimeout       int            `json:"FETCH_TIMEOUT"`
@@ -205,9 +206,16 @@ func defaultConfig() Config {
 			{URL: "https://zip.cm.edu.kg/all.txt"},
 			{URL: "https://countrymerge.pages.dev/all.txt"},
 			{URL: "https://ipdb.api.030101.xyz/?type=bestproxy&country=true"},
+			// GitHub 社区维护的高频更新源
+			{URL: "https://raw.githubusercontent.com/yuanxiawan/cfipv4db/refs/heads/main/high_score_ips.txt"},
+			{URL: "https://raw.githubusercontent.com/cmliu/WorkerVless2sub/refs/heads/main/addressesapi.txt"},
+			// 社区优选域名：非 http(s) 写法 → 按域名做 DNS 解析，取全部 A 记录
+			{URL: "cf.090227.xyz"},
+			{URL: "cmcc.090227.xyz"},
 		},
 		// 该 API 只吐裸 IP（无端口），统一补 443；设 0 可关闭此补全行为
 		BareIPDefaultPort:  443,
+		KeepUnlabeledNodes: true,
 		FetchMaxRetries:    3,
 		FetchRetryDelay:    3,
 		FetchTimeout:       3,

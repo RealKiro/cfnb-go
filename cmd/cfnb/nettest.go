@@ -57,7 +57,12 @@ func testNode(cfg *Config, node string) *NodeResult {
 	}
 	port, country, ok := strings.Cut(rest, "#")
 	if !ok {
-		return nil
+		// 不含 "#" 表示该节点没有国家标签（典型为 CF 官方 anycast IP 源）。
+		// 仅在 KEEP_UNLABELED_NODES 开启时保留，否则维持原有的「无标签即丢弃」。
+		if !cfg.KeepUnlabeledNodes {
+			return nil
+		}
+		country = ""
 	}
 
 	latency, success := testTCPLatency(ip, port, cfg.Timeout, cfg.TCPProbes)
@@ -82,6 +87,17 @@ type AvailabilityResult struct {
 // checkAvailability 调用可用性 API 校验节点
 func checkAvailability(cfg *Config, client *http.Client, node string) AvailabilityResult {
 	res := AvailabilityResult{Node: node, Stack: "unknown"}
+
+	// 无国家标签的节点（形如 ip:port，不含 "#"）通常来自 Cloudflare 官方
+	// anycast IP 源。可用性 API 的语义是「该 IP 能否作为**反代**」，对 CF 官方
+	// IP 恒返回 success=false（实测 104.16/104.17/104.19/162.159/198.41 全段如此）。
+	// 因此这类节点不做反代可用性判定，改由后续 HTTP 检测
+	// （请求 /cdn-cgi/trace，要求 400 + Server: cloudflare）把关——那才是
+	// 「是不是 CF 边缘」的实证，且不会漏放非 CF 的地址。
+	if cfg.KeepUnlabeledNodes && !strings.Contains(node, "#") {
+		res.OK = true
+		return res
+	}
 
 	ip, rest, ok := strings.Cut(node, ":")
 	if !ok {

@@ -93,12 +93,31 @@
         {
             "url": "https://ipdb.api.030101.xyz/?type=bestproxy&country=true",
             "enabled": true
+        },
+        {
+            "url": "https://raw.githubusercontent.com/yuanxiawan/cfipv4db/refs/heads/main/high_score_ips.txt",
+            "enabled": true
+        },
+        {
+            "url": "https://raw.githubusercontent.com/cmliu/WorkerVless2sub/refs/heads/main/addressesapi.txt",
+            "enabled": true
+        },
+        {
+            "url": "cf.090227.xyz",
+            "enabled": true
+        },
+        {
+            "url": "cmcc.090227.xyz",
+            "enabled": true
         }
     ],
-    "_comment_ADDITIONAL_SOURCES": "所有数据源列表，每个对象包含 url 和 enabled。无需指定格式，程序完全自适应解析（支持标准代码、中文名、emoji国旗、JSON等）。多个源之间按 ip:port 自动去重（保留先出现的，因此靠前的源优先级更高）。注意 ipdb.api.030101.xyz 的 type 取值：bestcf=优选 CF 官方 IP，bestproxy=优选第三方反代 IP",
+    "_comment_ADDITIONAL_SOURCES": "数据源列表，每项含 url 与 enabled。两种写法：(1) 以 http:// 或 https:// 开头 → 按 URL 拉取并自适应解析纯文本/JSON；(2) 其余写法视为「域名或裸 IP 直填」（如 cf.090227.xyz）→ 对该域名做 DNS 解析、取其全部 A 记录当候选。多个源之间按 ip:port 自动去重，保留先出现的，因此靠前的源优先级更高。注意 ipdb.api.030101.xyz 的 type 取值：bestcf=优选 CF 官方 IP，bestproxy=优选第三方反代 IP",
 
     "BARE_IP_DEFAULT_PORT": 443,
-    "_comment_BARE_IP_DEFAULT_PORT": "数据源只返回裸 IP（不带端口）时补的默认端口；0=不补并丢弃这类节点。ipdb.api.030101.xyz 等 API 只吐裸 IP，依赖此项才能解析出节点",
+    "_comment_BARE_IP_DEFAULT_PORT": "数据源只返回裸 IP（不带端口）时补的默认端口；域名直填源也用它。0=不补并丢弃这类节点。ipdb.api.030101.xyz 等 API 只吐裸 IP，依赖此项才能解析出节点",
+
+    "KEEP_UNLABELED_NODES": true,
+    "_comment_KEEP_UNLABELED_NODES": "是否保留「无国家标签」的节点。true=保留，并跳过可用性 API 检测（改由 HTTP 检测把关）；false=沿用旧行为，查不出国家就丢弃。建议开启：cfipv4db、社区优选域名等源提供的都是 Cloudflare 官方 anycast IP，而可用性 API 的语义是「该 IP 能否作为反代」，对 CF 官方 IP 恒为 success=false——不开启的话这些源等于白加。开启后无标签节点会进入 TCP/HTTP 检测，最终由 HTTP 检测（/cdn-cgi/trace 返回 400 且 Server 为 cloudflare）判定真假",
 
     "FETCH_MAX_RETRIES": 3,
     "_comment_FETCH_MAX_RETRIES": "获取节点列表失败时的最大重试次数",
