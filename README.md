@@ -136,7 +136,7 @@ docker run -d --name cfnb-go \
 
 | 项 | 说明 |
 | :--- | :--- |
-| 镜像地址 | `ghcr.io/<你的用户名>/cfnb-go:latest`（另有 `sha-xxxxxxx` 精确版本标签） |
+| 镜像地址 | `ghcr.io/<你的用户名>/cfnb-go:latest`（另有 `1.0.0` / `1.0` 版本标签与 `sha-xxxxxxx` 精确提交标签） |
 | 镜像来源 | `deploy/docker-compose.yml` **不写死镜像名**：通过环境变量 `CFNB_IMAGE` 注入（复制 `deploy/.env.example` 为 `deploy/.env` 填写）；未设置时回退为本地构建 |
 | `RUN_INTERVAL` | 循环间隔（秒）。默认 `0` = 只运行一次；compose 默认设为 `300`（5 分钟） |
 | 挂载 `configs/config.json` | 修改参数无需重建镜像；也可用 `CFNB_CONFIG` 环境变量指定容器内其他配置路径 |
