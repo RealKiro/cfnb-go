@@ -72,6 +72,17 @@ jobs:
           fi
           echo "  OK   compose 无 build 段"
 
+          echo "=== 断言挂载用长语法且禁止自动建目录 ==="
+          COUNT=$(grep -c "create_host_path: false" /tmp/cfg-default.yml || true)
+          if [ "${COUNT:-0}" -lt 2 ]; then
+            echo "  FAIL 期望至少 2 处 create_host_path: false（config.json 与 ip.txt），实际 ${COUNT:-0}"
+            echo "       （宿主路径缺失时 Docker 会创建同名目录，导致程序把目录当文件读写）"
+            exit 1
+          fi
+          echo "  OK   create_host_path: false × $COUNT"
+          assert_contains "target: /app/ip.txt" /tmp/cfg-default.yml
+          assert_contains "target: /app/config.json" /tmp/cfg-default.yml
+
           echo "=== 覆盖变量 ==="
           CFNB_IMAGE=ghcr.io/example/cfnb-go:v9 CFNB_PULL_POLICY=never \
             docker compose -f deploy/docker-compose.yml config > /tmp/cfg-override.yml
@@ -93,6 +104,11 @@ jobs:
             echo '```'
             echo
             echo '无 `build` 段 —— 镜像一律从 GHCR 拉取，本地不构建'
+            echo
+            echo '**挂载（长语法，禁止自动建目录）**'
+            echo '```yaml'
+            grep -E "target:|create_host_path:" /tmp/cfg-default.yml || true
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ============ 阶段二：多架构构建并推送 GHCR（PR 时跳过）============

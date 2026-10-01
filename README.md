@@ -109,7 +109,11 @@ cd /path/to/cfnb-go
 
 # 2. 按需修改 configs/config.json（填入 Cloudflare / WxPusher / GitHub 令牌）
 
-# 3. 确保 ip.txt 存在（用于结果持久化挂载）
+# 3. 先创建 ip.txt（用于结果持久化挂载）
+#    这一步必须做：Docker 短语法挂载遇到不存在的宿主路径时，会把它创建成「同名目录」，
+#    于是容器内 /app/ip.txt 变成目录，程序写入时报 is a directory，
+#    并连带跳过 Cloudflare DNS 更新与 GitHub 同步。compose 已改用长语法
+#    （create_host_path: false），文件缺失时会在启动阶段直接报错，而不是静默建目录。
 touch ip.txt
 
 # 4. 启动（默认拉取 ghcr.io/realkiro/cfnb-go:latest，每 5 分钟自动运行一次）
@@ -127,14 +131,14 @@ cp deploy/.env.example deploy/.env
 # 想每次都检查镜像更新：CFNB_PULL_POLICY=always
 ```
 
-不想用 Compose 也可以直接 `docker run`：
+不想用 Compose 也可以直接 `docker run`（用 `--mount` 而非 `-v`：宿主路径缺失时它会明确报错，而 `-v` 会静默创建目录）：
 
 ```bash
 docker run -d --name cfnb-go \
   -e RUN_INTERVAL=300 \
   -e TZ=Asia/Shanghai \
-  -v $(pwd)/configs/config.json:/app/config.json \
-  -v $(pwd)/ip.txt:/app/ip.txt \
+  --mount type=bind,source="$(pwd)"/configs/config.json,target=/app/config.json \
+  --mount type=bind,source="$(pwd)"/ip.txt,target=/app/ip.txt \
   ghcr.io/realkiro/cfnb-go:latest
 ```
 
@@ -144,6 +148,7 @@ docker run -d --name cfnb-go \
 | 镜像来源 | 环境变量 `CFNB_IMAGE` 注入；**未设置时回退为官方镜像 `ghcr.io/realkiro/cfnb-go:latest`**，fork 用户可在 `deploy/.env` 里改成自己的地址 |
 | 拉取策略 | 环境变量 `CFNB_PULL_POLICY`，默认 `missing`（本地无缓存时才拉取）。可选 `always`（每次 up 检查更新）/ `never`（只用本地已有镜像，不联网） |
 | 镜像构建 | **只由 CI 构建**：compose 无 `build` 段，本地不编译镜像。需要自定义镜像时请 fork 后改代码，由 CI 推送你自己的 GHCR（`deploy/Dockerfile` 仅被 CI 引用） |
+| 挂载方式 | 长语法 bind + `create_host_path: false`：宿主文件缺失时启动即报错并指名路径，不会被静默创建成目录。因此**`ip.txt` 必须先 `touch` 创建**；容器入口也会兜底检测，若发现挂载点被建成目录会打印提示后退出 |
 | `RUN_INTERVAL` | 循环间隔（秒）。默认 `0` = 只运行一次；compose 默认设为 `300`（5 分钟） |
 | 挂载 `configs/config.json` | 修改参数无需重建镜像；也可用 `CFNB_CONFIG` 环境变量指定容器内其他配置路径 |
 | 手动运行一次 | `docker compose -f deploy/docker-compose.yml run --rm cfnb`（临时忽略循环需加 `-e RUN_INTERVAL=0`） |

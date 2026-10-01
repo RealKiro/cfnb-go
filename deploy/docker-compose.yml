@@ -1,8 +1,16 @@
 # docker-compose.yml
 # 位置：deploy/ 目录；镜像一律从 GHCR 拉取，不支持本地构建
 #
-# 使用前确保仓库根存在 configs/config.json（仓库自带，改好令牌即可）
-# ip.txt 若不存在请先执行：touch ip.txt
+# 使用前准备：
+#   1. configs/config.json 仓库自带，改好令牌即可
+#   2. ip.txt 需先创建空文件（见下方说明）：touch ip.txt
+#
+# 为什么 ip.txt 必须先存在？
+#   Docker 短语法 bind mount 在宿主路径不存在时「总是创建为目录」，
+#   于是容器内 /app/ip.txt 会变成目录，程序写入时报 is a directory，
+#   并跳过 Cloudflare DNS 更新与 GitHub 同步。
+#   本文件改用长语法并显式设置 create_host_path: false，
+#   路径缺失时会在启动阶段直接报错，而不是静默建目录。
 #
 # 镜像来源由两个环境变量决定（支持 deploy/.env，参考 deploy/.env.example）：
 #   CFNB_IMAGE        默认 ghcr.io/realkiro/cfnb-go:latest（官方镜像，开箱即用）
@@ -14,6 +22,9 @@
 # 快速启动（在 deploy/ 目录下执行）：docker compose up -d
 # 查看日志：docker compose logs -f
 # 也可从仓库根执行：docker compose -f deploy/docker-compose.yml up -d
+#
+# 路径说明：volumes 的相对路径基于「本文件所在目录」解析，
+# 因此 ../ 指向仓库根（compose 规范要求相对路径必须以 . 或 .. 开头）。
 
 services:
   cfnb:
@@ -29,7 +40,26 @@ services:
       - TZ=Asia/Shanghai
       # - CFNB_CONFIG=/app/config.json  # 可选：显式指定配置文件路径
     volumes:
-      - ../configs/config.json:/app/config.json      # 主配置（含 Cloudflare / WxPusher / GitHub 令牌）
-      - ../ip.txt:/app/ip.txt                        # 优选结果持久化
-      # - ../valid_tokens.txt:/app/valid_tokens.txt  # 启用 IP 地区校准时取消注释
-      # - ../ipinfo_cache.txt:/app/ipinfo_cache.txt  # 启用 IP 地区校准时取消注释
+      # 主配置（含 Cloudflare / WxPusher / GitHub 令牌）；仓库自带，不会缺失
+      - type: bind
+        source: ../configs/config.json
+        target: /app/config.json
+        bind:
+          create_host_path: false
+      # 优选结果持久化；启动前需先创建空文件：touch ip.txt
+      - type: bind
+        source: ../ip.txt
+        target: /app/ip.txt
+        bind:
+          create_host_path: false
+      # 以下两项启用 IP 地区校准时取消注释（对应文件同样需先创建）
+      # - type: bind
+      #   source: ../valid_tokens.txt
+      #   target: /app/valid_tokens.txt
+      #   bind:
+      #     create_host_path: false
+      # - type: bind
+      #   source: ../ipinfo_cache.txt
+      #   target: /app/ipinfo_cache.txt
+      #   bind:
+      #     create_host_path: false
