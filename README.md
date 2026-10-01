@@ -65,11 +65,17 @@
 | Windows x64 | `cfnb-<版本>-windows-amd64.zip` |
 | Windows ARM64 | `cfnb-<版本>-windows-arm64.zip` |
 
+每个压缩包内含 **二进制 + `config.json`（带逐项注释的配置模板）**，解压后两者同目录，程序会自动读取：
+
 ```bash
 tar -xzf cfnb-1.0.0-linux-amd64.tar.gz
-cp deploy/data/config.json .    # 程序读取二进制同目录的 config.json
+# 解压得到：cfnb-1.0.0-linux-amd64（二进制）、config.json（配置模板）
 ./cfnb --version
+# 首次使用前编辑同目录的 config.json（Cloudflare / WxPusher / GitHub 令牌）
+./cfnb                          # 结果写入同目录的 ip.txt
 ```
+
+不填任何令牌也能直接跑：程序会回退到内置默认值，只是不推送通知、不改 DNS、不同步 GitHub。
 
 仓库只保存源码，**编译产物一律不进仓库**（已被 `.gitignore` 排除）。发布新版本只需打标签：
 
@@ -77,7 +83,7 @@ cp deploy/data/config.json .    # 程序读取二进制同目录的 config.json
 git tag v1.0.1 && git push origin v1.0.1
 ```
 
-CI 会自动交叉编译 6 个平台、打包并创建 Release（含 `checksums.txt`）。
+CI 会自动交叉编译 6 个平台、把 `config.json` 一并打包进每个产物，并创建 Release（含 `checksums.txt`）。
 
 ### 方式二：本地运行（单二进制）
 
