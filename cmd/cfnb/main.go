@@ -9,8 +9,9 @@ import (
 	"time"
 )
 
-// version 版本号
-const version = "1.0.0"
+// version 版本号。用 var 而非 const，以便发布时通过
+// -ldflags "-X main.version=x.y.z" 注入 tag 对应的版本号。
+var version = "1.0.0"
 
 // globalForceDirect 强制直连开关（供工具层的客户端构造使用）
 var globalForceDirect bool

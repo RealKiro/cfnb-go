@@ -52,7 +52,34 @@
 
 ## 📦 快速开始
 
-### 方式一：本地运行（单二进制）
+### 方式一：下载预编译二进制（免编译）
+
+前往 [Releases](https://github.com/RealKiro/cfnb-go/releases) 下载对应平台的文件：
+
+| 平台 | 文件 |
+| :--- | :--- |
+| Linux x86_64 | `cfnb-<版本>-linux-amd64.tar.gz` |
+| Linux ARM64 | `cfnb-<版本>-linux-arm64.tar.gz` |
+| macOS Intel | `cfnb-<版本>-darwin-amd64.tar.gz` |
+| macOS Apple Silicon | `cfnb-<版本>-darwin-arm64.tar.gz` |
+| Windows x64 | `cfnb-<版本>-windows-amd64.zip` |
+| Windows ARM64 | `cfnb-<版本>-windows-arm64.zip` |
+
+```bash
+tar -xzf cfnb-1.0.0-linux-amd64.tar.gz
+cp configs/config.json .        # 程序读取二进制同目录的 config.json
+./cfnb --version
+```
+
+仓库只保存源码，**编译产物一律不进仓库**（已被 `.gitignore` 排除）。发布新版本只需打标签：
+
+```bash
+git tag v1.0.1 && git push origin v1.0.1
+```
+
+CI 会自动交叉编译 6 个平台、打包并创建 Release（含 `checksums.txt`）。
+
+### 方式二：本地运行（单二进制）
 
 ```bash
 # 1. 编译（Go 1.21+）
@@ -72,7 +99,7 @@ cfnb.exe           # Windows
 
 程序读取**可执行文件同目录**的 `config.json`（可用环境变量 `CFNB_CONFIG` 指定其他路径），结果写入其 `OUTPUT_FILE`（默认 `ip.txt`）。
 
-### 方式二：Docker（推荐）
+### 方式三：Docker（推荐）
 
 镜像由 GitHub Actions 自动构建并推送到 GHCR，支持 `amd64` / `arm64`：
 
