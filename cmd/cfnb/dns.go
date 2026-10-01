@@ -108,6 +108,7 @@ func extractRiskScore(v any) float64 {
 
 // batchUpdateCloudflareDNS 将优选结果原子批量更新到 Cloudflare DNS。
 // 仅作用于 DNS 环节的过滤：端口(443) → IPv6 落地 → 国家黑名单 → IP 风险等级（带回退）
+// 返回实际写入 DNS 的节点列表（供筛子统计「DNS写入」工序使用；未启用时返回 nil）
 func batchUpdateCloudflareDNS(
 	cfg *Config,
 	notifier *Notifier,
@@ -117,16 +118,16 @@ func batchUpdateCloudflareDNS(
 	latencyMap map[string]float64,
 	httpLatencyMap map[string]float64,
 	httpJitterMap map[string]float64,
-) {
+) []string {
 	if !cfg.CFEnabled {
 		logf("Cloudflare DNS 批量更新未启用。")
-		return
+		return nil
 	}
 
 	recordType := strings.ToUpper(cfg.DNSRecordType)
 	if recordType != "A" && recordType != "TXT" {
 		logf("不支持的 DNS_RECORD_TYPE: %s，已跳过 DNS 更新。", recordType)
-		return
+		return nil
 	}
 
 	targetCount := cfg.DNSUpdateTargetCount
@@ -292,13 +293,13 @@ func batchUpdateCloudflareDNS(
 				dnsNodeList = append(dnsNodeList, ipList...)
 			} else {
 				logf("TXT 模式需要端口信息，但降级数据中无端口，DNS 更新跳过。")
-				return
+				return nil
 			}
 		} else {
 			msg := "没有可用的 IP 用于 DNS 更新，跳过。"
 			logf("%s", msg)
 			notifier.Send(msg, "DNS 更新跳过")
-			return
+			return nil
 		}
 	}
 
@@ -359,7 +360,7 @@ func batchUpdateCloudflareDNS(
 			} else {
 				logf("Cloudflare TXT 记录批量更新成功！共 %d 条记录，每条内容为一个 IP:端口。", len(dnsContentList))
 			}
-			return
+			return dnsNodeList
 		}
 		logf("[尝试 %d/%d] DNS 更新出错: %v", attempt, cfg.DNSUpdateMaxRetries, err)
 		if attempt < cfg.DNSUpdateMaxRetries {
@@ -370,6 +371,8 @@ func batchUpdateCloudflareDNS(
 			notifier.Send(msg, "DNS 更新失败")
 		}
 	}
+	// 全部重试失败：没有任何记录被写入，返回 nil 以免统计误报
+	return nil
 }
 
 // submitDNSRecords 单次原子批量更新（删除全部旧记录 + 创建新记录）

@@ -182,7 +182,8 @@ func TestFetchAllSourcesDedup(t *testing.T) {
 	// 同一个源写两遍，模拟多源场景
 	cfg.AdditionalSources = []SourceConfig{{URL: srv.URL}, {URL: srv.URL}}
 
-	nodes := fetchAllSources(&cfg)
+	sieve := newSieveStats()
+	nodes := fetchAllSources(&cfg, sieve)
 
 	if len(nodes) != 2 {
 		t.Fatalf("期望去重后剩 2 个节点，实际 %d 个: %v", len(nodes), nodes)
@@ -201,6 +202,25 @@ func TestFetchAllSourcesDedup(t *testing.T) {
 	}
 	if _, ok := counts["104.17.117.2:443#US"]; !ok {
 		t.Errorf("去重结果缺少 104.17.117.2:443#US（应保留先出现的标签），实际: %v", nodes)
+	}
+
+	// 筛子统计：同一 URL 配两遍应分配两个不冲突的标签，
+	// 且「抓取」记原始条数（各 5 条），「去重合并」只记给先到先得的源
+	if len(sieve.labels) != 2 {
+		t.Fatalf("期望登记 2 个源标签，实际 %d 个: %v", len(sieve.labels), sieve.labels)
+	}
+	if sieve.labels[0] == sieve.labels[1] {
+		t.Errorf("重复登记的源标签应加序号区分，实际都是 %q", sieve.labels[0])
+	}
+	if sieve.stageNames[0] != "抓取" {
+		t.Errorf("第一道工序应为「抓取」，实际 %q", sieve.stageNames[0])
+	}
+	if got := sieve.stageCounts[0]; len(got) != 2 || got[0] != 5 || got[1] != 5 {
+		t.Errorf("抓取阶段应记录 [5 5]（各源原始 5 条），实际 %v", got)
+	}
+	sieve.recordNodes("去重合并", nodes)
+	if got := sieve.stageCounts[1]; len(got) != 2 || got[0] != 2 || got[1] != 0 {
+		t.Errorf("去重后应全部归给先出现的源 [2 0]，实际 %v", got)
 	}
 }
 

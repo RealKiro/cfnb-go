@@ -10,10 +10,12 @@ ip.txt
 *.log
 .env
 .run.lock
-cfnb
-cfnb.exe
-cfnb-go
-cfnb-go.exe
+# 编译产物（只忽略仓库根目录下的可执行文件；必须加前导 / 锚定，
+# 否则 "cfnb" 会连 cmd/cfnb/ 源码目录一起忽略，导致该目录下新增文件无法提交）
+/cfnb
+/cfnb.exe
+/cfnb-go
+/cfnb-go.exe
 
 # Go
 __debug_bin*

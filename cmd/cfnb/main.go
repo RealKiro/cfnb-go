@@ -61,8 +61,14 @@ func run(cfg *Config, baseDir string) {
 	notifier := NewNotifier(cfg)
 	printBanner(cfg)
 
+	// 筛子统计：每道工序后按数据源记录剩余节点数并打印，
+	// run 结束时（含所有提前 return 的路径）输出「数据源 × 工序」汇总矩阵
+	sieve := newSieveStats()
+	defer sieve.printSummary()
+
 	// ---------- 1. 聚合数据源 ----------
-	nodes := fetchAllSources(cfg)
+	nodes := fetchAllSources(cfg, sieve)
+	sieve.recordNodes("去重合并", nodes)
 	logf("合并后总计 %d 个节点。", len(nodes))
 
 	// ---------- 2. IP 地区校准 ----------
@@ -72,6 +78,7 @@ func run(cfg *Config, baseDir string) {
 
 	// ---------- 3. 前置过滤（按序：端口 → 黑名单 → 白名单）----------
 	nodes = preFilter(cfg, nodes)
+	sieve.recordNodes("前置过滤", nodes)
 	if len(nodes) == 0 {
 		logf("过滤后无任何有效节点，退出。")
 		return
@@ -83,6 +90,11 @@ func run(cfg *Config, baseDir string) {
 		logf("没有通过成功率筛选的节点，请检查网络或降低 MIN_SUCCESS_RATE。")
 		return
 	}
+	tcpPassed := make([]string, 0, len(results))
+	for _, r := range results {
+		tcpPassed = append(tcpPassed, r.Node)
+	}
+	sieve.recordNodes("TCP通过", tcpPassed)
 	sortNodeResults(results)
 
 	latencyMap := make(map[string]float64, len(results))
@@ -92,6 +104,7 @@ func run(cfg *Config, baseDir string) {
 
 	countryNodes := groupByCountry(results)
 	candidates := buildCandidates(cfg, results, countryNodes)
+	sieve.recordNodes("候选池", candidates)
 	if len(candidates) == 0 {
 		logf("没有候选节点，退出。")
 		return
@@ -99,7 +112,9 @@ func run(cfg *Config, baseDir string) {
 
 	// ---------- 5. 可用性 → HTTP → 带宽 三级筛选 ----------
 	candidates, availStacks := availabilityFilterWithRetry(cfg, candidates, notifier)
+	sieve.recordNodes("可用通过", candidates)
 	candidates, httpLatencyMap, httpJitterMap := httpServerFilter(cfg, candidates, notifier)
+	sieve.recordNodes("HTTP通过", candidates)
 
 	var bwResults []BandwidthResult
 	for attempt := 1; attempt <= cfg.BandwidthRetryMax; attempt++ {
@@ -113,6 +128,11 @@ func run(cfg *Config, baseDir string) {
 			sleepSeconds(cfg.BandwidthRetryDelay)
 		}
 	}
+	bwPassed := make([]string, 0, len(bwResults))
+	for _, r := range bwResults {
+		bwPassed = append(bwPassed, r.Node)
+	}
+	sieve.recordNodes("带宽通过", bwPassed)
 
 	// ---------- 6. 综合排序，产出最终节点 ----------
 	speedMap := make(map[string]float64, len(bwResults))
@@ -130,21 +150,22 @@ func run(cfg *Config, baseDir string) {
 			speedMap[r.Node] = r.Speed
 		}
 		finalSelected = scoreAndSelect(cfg, bwResults, latencyMap, httpLatencyMap, httpJitterMap)
+	}
+	sieve.recordNodes("最终入选", finalSelected)
 
-		logf("\n================ 最终优选节点 ================")
-		for i, node := range finalSelected {
-			line := fmt.Sprintf("%d. %s 速度 %.2f Mbps", i+1, node, speedMap[node])
-			if v, ok := httpLatencyMap[node]; ok {
-				line += fmt.Sprintf(" 延迟 %.2f ms", v)
-			}
-			if v, ok := httpJitterMap[node]; ok {
-				line += fmt.Sprintf(" 抖动 %.2f ms", v)
-			}
-			if v, ok := latencyMap[node]; ok {
-				line += fmt.Sprintf(" 延迟 %.2f ms", v*1000)
-			}
-			logf("%s", line)
+	logf("\n================ 最终优选节点 ================")
+	for i, node := range finalSelected {
+		line := fmt.Sprintf("%d. %s 速度 %.2f Mbps", i+1, node, speedMap[node])
+		if v, ok := httpLatencyMap[node]; ok {
+			line += fmt.Sprintf(" 延迟 %.2f ms", v)
 		}
+		if v, ok := httpJitterMap[node]; ok {
+			line += fmt.Sprintf(" 抖动 %.2f ms", v)
+		}
+		if v, ok := latencyMap[node]; ok {
+			line += fmt.Sprintf(" 延迟 %.2f ms", v*1000)
+		}
+		logf("%s", line)
 	}
 
 	// ---------- 7. 写出结果 ----------
@@ -160,7 +181,11 @@ func run(cfg *Config, baseDir string) {
 		ip, _, _ := strings.Cut(node, ":")
 		ipList = append(ipList, ip)
 	}
-	batchUpdateCloudflareDNS(cfg, notifier, ipList, availStacks, bwResults, latencyMap, httpLatencyMap, httpJitterMap)
+	dnsWritten := batchUpdateCloudflareDNS(cfg, notifier, ipList, availStacks, bwResults, latencyMap, httpLatencyMap, httpJitterMap)
+	// 仅在启用 CF 更新时记录该工序：未启用则整道工序没跑，记 0 会误导
+	if cfg.CFEnabled {
+		sieve.recordNodes("DNS写入", dnsWritten)
+	}
 
 	// ---------- 9. GitHub 同步 ----------
 	syncToGitHub(cfg, notifier)
@@ -214,8 +239,9 @@ func printUsage() {
 `, version)
 }
 
-// fetchAllSources 抓取所有启用的数据源并按 ip:port 去重合并
-func fetchAllSources(cfg *Config) []string {
+// fetchAllSources 抓取所有启用的数据源并按 ip:port 去重合并。
+// 归属统计与去重同口径：同一 ip:port 出现在多个源时记给第一个贡献它的源。
+func fetchAllSources(cfg *Config, sieve *sieveStats) []string {
 	client := newHTTPClient(
 		time.Duration(cfg.FetchConnectTimout)*time.Second,
 		time.Duration(cfg.FetchTimeout)*time.Second,
@@ -224,19 +250,26 @@ func fetchAllSources(cfg *Config) []string {
 
 	var nodes []string
 	seen := map[string]struct{}{}
+	rawCounts := map[string]int{}
 	for _, source := range cfg.AdditionalSources {
 		if !source.IsEnabled() || source.URL == "" {
 			continue
 		}
-		for _, node := range fetchAdditionalSource(cfg, client, source.URL) {
-			key, _, _ := strings.Cut(node, "#")
+		label := sieve.registerSource(source.URL)
+		fetched := fetchAdditionalSource(cfg, client, source.URL)
+		rawCounts[label] += len(fetched)
+		for _, node := range fetched {
+			key := nodeKeyOf(node)
 			if _, dup := seen[key]; dup {
 				continue
 			}
 			seen[key] = struct{}{}
+			sieve.claim(key, label)
 			nodes = append(nodes, node)
 		}
 	}
+	// 第一道工序：各源抓取到的原始节点数（去重前，含被其他源抢先的重复节点）
+	sieve.recordCounts("抓取", rawCounts)
 	return nodes
 }
 
