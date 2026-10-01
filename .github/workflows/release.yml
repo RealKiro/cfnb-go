@@ -69,11 +69,52 @@ jobs:
           (cd dist && sha256sum *.tar.gz *.zip > checksums.txt)
           ls -lh dist
 
+      - name: 生成 Release 说明
+        run: |
+          cat > release-body.md <<EOF
+          Cloudflare CDN 节点优选工具（Go 版）——零依赖静态二进制，无需 Python / curl / git。
+
+          ## 📦 下载
+
+          | 平台 | 架构 | 文件 |
+          | :--- | :--- | :--- |
+          | Linux | x86_64 | \`cfnb-${{ steps.tag.outputs.version }}-linux-amd64.tar.gz\` |
+          | Linux | ARM64 | \`cfnb-${{ steps.tag.outputs.version }}-linux-arm64.tar.gz\` |
+          | macOS | Intel | \`cfnb-${{ steps.tag.outputs.version }}-darwin-amd64.tar.gz\` |
+          | macOS | Apple Silicon | \`cfnb-${{ steps.tag.outputs.version }}-darwin-arm64.tar.gz\` |
+          | Windows | x64 | \`cfnb-${{ steps.tag.outputs.version }}-windows-amd64.zip\` |
+          | Windows | ARM64 | \`cfnb-${{ steps.tag.outputs.version }}-windows-arm64.zip\` |
+
+          ## 🚀 使用
+
+          \`\`\`bash
+          tar -xzf cfnb-${{ steps.tag.outputs.version }}-linux-amd64.tar.gz
+          cp configs/config.json .        # 程序读取二进制同目录的 config.json
+          ./cfnb --version                # 应输出 cfnb-go ${{ steps.tag.outputs.version }}
+          ./cfnb                          # 执行一次完整优选流程
+          \`\`\`
+
+          也可以用 Docker（镜像压缩后约 6.4 MB，支持 amd64 / arm64）：
+
+          \`\`\`bash
+          docker pull ghcr.io/realkiro/cfnb-go:latest
+          \`\`\`
+
+          ## 🔐 校验下载完整性
+
+          \`\`\`bash
+          sha256sum -c checksums.txt --ignore-missing
+          \`\`\`
+
+          所有产物均由 GitHub Actions 从本 tag 源码交叉编译，无本地构建介入。
+          EOF
+
       - name: 发布到 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.value }}
-          name: ${{ steps.tag.outputs.value }}
+          name: cfnb-go ${{ steps.tag.outputs.version }}
+          body_path: release-body.md
           generate_release_notes: true
           files: |
             dist/*.tar.gz
