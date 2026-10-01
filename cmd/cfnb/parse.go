@@ -435,7 +435,7 @@ func resolveCountriesBatch(cfg *Config, ipports []string) map[string]string {
 		true,
 	)
 
-	pp := newProgressPrinter(cfg.ProgressPrintInterval, "[备用API查询]")
+	pp := newProgressPrinter(cfg.ProgressPrintInterval, "🧭 [备用API查询]")
 	workers := cfg.FallbackWorkers
 	if workers < 1 {
 		workers = 1
@@ -486,6 +486,10 @@ func fetchAdditionalSource(cfg *Config, client *http.Client, rawURL string) []st
 	if isDirectSource(rawURL) {
 		logf("数据源 %s 为域名/裸 IP 直填，解析候选 IP ...", rawURL)
 		nodes := resolveDirectSource(cfg, rawURL)
+		if len(nodes) == 0 {
+			logf("⚠️  %s 未解析出任何节点：域名无 A 记录，或 BARE_IP_DEFAULT_PORT=0 导致裸 IP 被丢弃。", rawURL)
+			return nodes
+		}
 		logf("从 %s 解析出 %d 个节点。", rawURL, len(nodes))
 		return nodes
 	}
@@ -498,11 +502,21 @@ func fetchAdditionalSource(cfg *Config, client *http.Client, rawURL string) []st
 			if attempt < cfg.FetchMaxRetries {
 				logf("等待 %d 秒后重试...", cfg.FetchRetryDelay)
 				sleepSeconds(cfg.FetchRetryDelay)
-			} else {
-				logf("已尝试 %d 次，放弃该数据源。", cfg.FetchMaxRetries)
-				return nil
+				continue
 			}
-			continue
+			logf("已尝试 %d 次，放弃该数据源。", cfg.FetchMaxRetries)
+			return nil
+		}
+		if len(nodes) == 0 {
+			// 请求成功但一个节点都没解析出来。这通常不是「源本身失效」，
+			// 而是源站这次吐了空体 / 拦截页 / 结构异常的内容，重试往往能恢复。
+			if attempt < cfg.FetchMaxRetries {
+				logf("⚠️  本次未解析出节点，%d 秒后重试（源站抖动或返回了非节点内容）。", cfg.FetchRetryDelay)
+				sleepSeconds(cfg.FetchRetryDelay)
+				continue
+			}
+			logf("❌ 数据源 %s 请求成功但 %d 次均未解析出节点，本轮跳过（详见上方响应片段）。", rawURL, cfg.FetchMaxRetries)
+			return nil
 		}
 		logf("从 %s 解析出 %d 个节点。", rawURL, len(nodes))
 		return nodes
@@ -531,7 +545,61 @@ func doFetch(cfg *Config, client *http.Client, rawURL string) ([]string, error) 
 	if err != nil {
 		return nil, err
 	}
-	return parseAdaptive(cfg, string(body)), nil
+	nodes := parseAdaptive(cfg, string(body))
+	if len(nodes) == 0 {
+		// 静默失效的头号来源。把「请求成功了，但拿到的到底是什么」打进日志，
+		// 否则只能看到一个 0，无从判断是空响应、拦截页，还是解析规则不匹配。
+		logf("⚠️  %s 请求成功（HTTP %d，%s，%s）但解析出 0 个节点",
+			rawURL, resp.StatusCode, responseContentType(resp), humanBytes(len(body)))
+		logf("    响应开头：%s", bodyPreview(body))
+	}
+	return nodes, nil
+}
+
+// responseContentType 取响应 Content-Type（缺失时给出明确占位，避免看着像空值）
+func responseContentType(resp *http.Response) string {
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		return ct
+	}
+	return "Content-Type 缺失"
+}
+
+// humanBytes 人类可读的字节数
+func humanBytes(n int) string {
+	switch {
+	case n == 0:
+		return "响应体为空（0 字节）"
+	case n < 1024:
+		return fmt.Sprintf("%d 字节", n)
+	case n < 1<<20:
+		return fmt.Sprintf("%.1f KB / %d 字节", float64(n)/1024, n)
+	default:
+		return fmt.Sprintf("%.1f MB / %d 字节", float64(n)/(1<<20), n)
+	}
+}
+
+// bodyPreview 提取响应体开头片段，用于判断「拿到的到底是什么内容」。
+// 空响应体、HTML 拦截页、结构不符的 JSON 都能一眼认出。
+func bodyPreview(body []byte) string {
+	if len(body) == 0 {
+		return "（空响应体，源站这次什么都没返回）"
+	}
+	// 折叠所有空白，保证日志仍是一行
+	flat := strings.Join(strings.Fields(string(body)), " ")
+	const maxRunes = 120
+	suffix := ""
+	if rs := []rune(flat); len(rs) > maxRunes {
+		flat = string(rs[:maxRunes])
+		suffix = " …（已截断）"
+	}
+	hint := ""
+	switch {
+	case strings.HasPrefix(flat, "<"):
+		hint = "   ← 是 HTML 页面（拦截页 / 挑战页 / 错误页），不是节点列表"
+	case strings.HasPrefix(flat, "{"), strings.HasPrefix(flat, "["):
+		hint = "   ← 是 JSON，但字段结构与解析规则不匹配"
+	}
+	return fmt.Sprintf("%q%s%s", flat, suffix, hint)
 }
 
 const defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"

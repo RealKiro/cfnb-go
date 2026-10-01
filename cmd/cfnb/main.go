@@ -16,6 +16,9 @@ var version = "1.0.0"
 // globalForceDirect 强制直连开关（供工具层的客户端构造使用）
 var globalForceDirect bool
 
+// medals 最终优选列表的前三名标记（其余用序号）
+var medals = []string{"🥇", "🥈", "🥉"}
+
 func main() {
 	// 便于 CI 与容器内快速校验二进制可用性
 	for _, arg := range os.Args[1:] {
@@ -49,7 +52,7 @@ func main() {
 	// 单实例锁：已有实例在跑则直接退出
 	lockPath := filepath.Join(baseDir, ".run.lock")
 	if !acquireSingleInstance(lockPath) {
-		logf("检测到本程序已在运行，本次启动自动退出。")
+		logf("⚠️  检测到本程序已在运行，本次启动自动退出。")
 		os.Exit(0)
 	}
 	defer releaseSingleInstance()
@@ -69,7 +72,7 @@ func run(cfg *Config, baseDir string) {
 	// ---------- 1. 聚合数据源 ----------
 	nodes := fetchAllSources(cfg, sieve)
 	sieve.recordNodes("去重合并", nodes)
-	logf("合并后总计 %d 个节点。", len(nodes))
+	logf("🧮 合并后总计 %d 个节点。", len(nodes))
 
 	// ---------- 2. IP 地区校准 ----------
 	tokenFile := filepath.Join(baseDir, cfg.IPCalibrationTokenFile)
@@ -80,14 +83,14 @@ func run(cfg *Config, baseDir string) {
 	nodes = preFilter(cfg, nodes)
 	sieve.recordNodes("前置过滤", nodes)
 	if len(nodes) == 0 {
-		logf("过滤后无任何有效节点，退出。")
+		logf("❌ 过滤后无任何有效节点，退出。")
 		return
 	}
 
 	// ---------- 4. TCP 连接测试 ----------
 	results := tcpTestAll(cfg, nodes)
 	if len(results) == 0 {
-		logf("没有通过成功率筛选的节点，请检查网络或降低 MIN_SUCCESS_RATE。")
+		logf("❌ 没有通过成功率筛选的节点，请检查网络或降低 MIN_SUCCESS_RATE。")
 		return
 	}
 	tcpPassed := make([]string, 0, len(results))
@@ -106,7 +109,7 @@ func run(cfg *Config, baseDir string) {
 	candidates := buildCandidates(cfg, results, countryNodes)
 	sieve.recordNodes("候选池", candidates)
 	if len(candidates) == 0 {
-		logf("没有候选节点，退出。")
+		logf("❌ 没有候选节点，退出。")
 		return
 	}
 
@@ -118,7 +121,7 @@ func run(cfg *Config, baseDir string) {
 
 	var bwResults []BandwidthResult
 	for attempt := 1; attempt <= cfg.BandwidthRetryMax; attempt++ {
-		logf("\n[带宽测速] 第 %d 轮测试...", attempt)
+		logf("\n🚀 [带宽测速] 第 %d 轮测试...", attempt)
 		bwResults = bandwidthFilter(cfg, candidates)
 		if len(bwResults) > 0 {
 			break
@@ -139,7 +142,7 @@ func run(cfg *Config, baseDir string) {
 	var finalSelected []string
 
 	if len(bwResults) == 0 {
-		logf("\n带宽测速多次重试仍无有效结果，将使用 TCP 筛选结果作为最终节点。")
+		logf("\n⚠️  带宽测速多次重试仍无有效结果，降级使用 TCP 筛选结果作为最终节点。")
 		notifier.Send(
 			fmt.Sprintf("带宽测速经 %d 轮尝试后仍无有效结果，已降级使用 TCP 排序节点。", cfg.BandwidthRetryMax),
 			"带宽测速全部失败",
@@ -153,17 +156,25 @@ func run(cfg *Config, baseDir string) {
 	}
 	sieve.recordNodes("最终入选", finalSelected)
 
-	logf("\n================ 最终优选节点 ================")
+	logf("\n============ 🏆 最终优选节点 ============")
 	for i, node := range finalSelected {
-		line := fmt.Sprintf("%d. %s 速度 %.2f Mbps", i+1, node, speedMap[node])
+		// 前三名用奖牌代替序号；其余保持「序号.」对齐
+		prefix := fmt.Sprintf("%2d. ", i+1)
+		if i < len(medals) {
+			prefix = medals[i] + " "
+		}
+		line := prefix + node
+		if v, ok := speedMap[node]; ok && v > 0 {
+			line += fmt.Sprintf("   🚀 %.2f Mbps", v)
+		}
 		if v, ok := httpLatencyMap[node]; ok {
-			line += fmt.Sprintf(" 延迟 %.2f ms", v)
+			line += fmt.Sprintf("   🌐 HTTP %.2f ms", v)
 		}
 		if v, ok := httpJitterMap[node]; ok {
-			line += fmt.Sprintf(" 抖动 %.2f ms", v)
+			line += fmt.Sprintf("   📉 抖动 %.2f ms", v)
 		}
 		if v, ok := latencyMap[node]; ok {
-			line += fmt.Sprintf(" 延迟 %.2f ms", v*1000)
+			line += fmt.Sprintf("   ⚡ TCP %.2f ms", v*1000)
 		}
 		logf("%s", line)
 	}
@@ -173,7 +184,7 @@ func run(cfg *Config, baseDir string) {
 		logf("写入 %s 失败: %v", cfg.OutputFile, err)
 		return
 	}
-	logf("\n结果已保存到 %s（共 %d 个节点）", cfg.OutputFile, len(finalSelected))
+	logf("\n💾 结果已保存到 %s（共 %d 个节点）", cfg.OutputFile, len(finalSelected))
 
 	// ---------- 8. Cloudflare DNS 更新 ----------
 	ipList := make([]string, 0, len(finalSelected))
@@ -193,20 +204,24 @@ func run(cfg *Config, baseDir string) {
 
 // printBanner 打印运行参数摘要
 func printBanner(cfg *Config) {
+	logf(strings.Repeat("=", 62))
+	logf(" ☁️  cfnb-go %s   Cloudflare 优选节点自动筛选", version)
+	logf(strings.Repeat("=", 62))
+
 	mode := fmt.Sprintf("全局最优%d个", cfg.GlobalTopN)
 	if !cfg.UseGlobalMode {
 		mode = fmt.Sprintf("每个国家最优%d个", cfg.PerCountryTopN)
 	}
-	logf("当前模式：%s，每个节点测试 %d 次 TCP 连接", mode, cfg.TCPProbes)
-	logf("最低成功率要求：%.0f%%", cfg.MinSuccessRate*100)
-	logf("IP 可用性二次筛选：%s（仅对候选节点）", enabledText(cfg.TestAvailability))
-	logf("HTTP检测：%s（仅对候选节点）", enabledText(cfg.HTTPTestEnabled))
-	logf("IPv6 客户端 IP 过滤（仅作用于DNS更新环节）：%s", enabledText(cfg.FilterIPv6Availability))
-	logf("DNS黑名单过滤：%s，黑名单国家：%s", enabledText(cfg.FilterBlockedCountriesEnabled), strings.Join(cfg.BlockedCountries, ", "))
-	logf("IP 风险等级过滤：%s（最高允许：%s）", enabledText(cfg.DNSIPRiskFilterEnabled), cfg.DNSIPRiskMaxLevel)
-	logf("带宽测速候选数：%d，测速文件大小：%.1f MB，超时：%ds", cfg.BandwidthCandidat, cfg.BandwidthSizeMB, cfg.BandwidthTimeout)
+	logf("🎯 当前模式：%s，每个节点测试 %d 次 TCP 连接", mode, cfg.TCPProbes)
+	logf("📉 最低成功率要求：%.0f%%", cfg.MinSuccessRate*100)
+	logf("🩺 IP 可用性二次筛选：%s（仅对候选节点）", enabledText(cfg.TestAvailability))
+	logf("🌐 HTTP检测：%s（仅对候选节点）", enabledText(cfg.HTTPTestEnabled))
+	logf("🛡️  IPv6 客户端 IP 过滤（仅作用于DNS更新环节）：%s", enabledText(cfg.FilterIPv6Availability))
+	logf("🚫 DNS黑名单过滤：%s，黑名单国家：%s", enabledText(cfg.FilterBlockedCountriesEnabled), strings.Join(cfg.BlockedCountries, ", "))
+	logf("☣️  IP 风险等级过滤：%s（最高允许：%s）", enabledText(cfg.DNSIPRiskFilterEnabled), cfg.DNSIPRiskMaxLevel)
+	logf("🚀 带宽测速候选数：%d，测速文件大小：%.1f MB，超时：%ds", cfg.BandwidthCandidat, cfg.BandwidthSizeMB, cfg.BandwidthTimeout)
 	if cfg.FilterCountriesEnabled {
-		logf("前置白名单过滤：启用，仅保留：%s", strings.Join(cfg.AllowedCountries, ", "))
+		logf("✅ 前置白名单过滤：启用，仅保留：%s", strings.Join(cfg.AllowedCountries, ", "))
 	}
 }
 
@@ -297,7 +312,7 @@ func preFilter(cfg *Config, nodes []string) []string {
 		for _, p := range cfg.PreFilterPorts {
 			portsDisplay = append(portsDisplay, strconv.Itoa(p))
 		}
-		logf("前置端口过滤（仅保留端口 %s）：%d -> %d 个节点", strings.Join(portsDisplay, ", "), before, len(nodes))
+		logf("🚧 前置端口过滤（仅保留端口 %s）：%d -> %d 个节点", strings.Join(portsDisplay, ", "), before, len(nodes))
 		if len(nodes) == 0 {
 			return nil
 		}
@@ -311,13 +326,14 @@ func preFilter(cfg *Config, nodes []string) []string {
 		}
 		filtered := nodes[:0:0]
 		for _, node := range nodes {
-			tag := nodeTag(node)
-			if _, isBlocked := blocked[strings.ToUpper(strings.Fields(tag)[0])]; !isBlocked {
+			// 无国家标签的节点（CF 官方 anycast IP）不参与国家黑名单判断：
+			// 拿不到落地国家就宁可放过，也不误杀（与 DNS 阶段的口径一致）
+			if _, isBlocked := blocked[strings.ToUpper(firstField(nodeTag(node)))]; !isBlocked {
 				filtered = append(filtered, node)
 			}
 		}
 		nodes = filtered
-		logf("前置黑名单过滤：%d -> %d 个节点（已屏蔽：%s）", before, len(nodes), strings.Join(sortStrings(cfg.PreFilterBlockedCountries), ", "))
+		logf("🚧 前置黑名单过滤：%d -> %d 个节点（已屏蔽：%s）", before, len(nodes), strings.Join(sortStrings(cfg.PreFilterBlockedCountries), ", "))
 		if len(nodes) == 0 {
 			return nil
 		}
@@ -334,7 +350,7 @@ func preFilter(cfg *Config, nodes []string) []string {
 			if !strings.Contains(node, "#") {
 				continue
 			}
-			if _, ok := allowed[strings.ToUpper(strings.Fields(nodeTag(node))[0])]; ok {
+			if _, ok := allowed[strings.ToUpper(firstField(nodeTag(node)))]; ok {
 				filtered = append(filtered, node)
 			}
 		}
@@ -343,7 +359,7 @@ func preFilter(cfg *Config, nodes []string) []string {
 		for c := range allowed {
 			allowedDisplay = append(allowedDisplay, c)
 		}
-		logf("\n国家过滤（测试前）：%d -> %d 个节点（允许国家：%s）", before, len(nodes), strings.Join(sortStrings(allowedDisplay), ", "))
+		logf("\n🚧 国家过滤（测试前）：%d -> %d 个节点（允许国家：%s）", before, len(nodes), strings.Join(sortStrings(allowedDisplay), ", "))
 	}
 	return nodes
 }
@@ -359,8 +375,8 @@ func nodeTag(node string) string {
 
 // tcpTestAll 并发完成 TCP 测试
 func tcpTestAll(cfg *Config, nodes []string) []*NodeResult {
-	logf("开始 TCP 连接测试（超时 %.1fs，并发 %d）...", cfg.Timeout, cfg.MaxWorkers)
-	pp := newProgressPrinter(cfg.ProgressPrintInterval, "[TCP测试]")
+	logf("🔌 开始 TCP 连接测试（超时 %.1fs，并发 %d）...", cfg.Timeout, cfg.MaxWorkers)
+	pp := newProgressPrinter(cfg.ProgressPrintInterval, "🔌 [TCP测试]")
 
 	results, _ := parallelRunProgress(nodes, cfg.MaxWorkers,
 		func(node string) (*NodeResult, bool) {
@@ -368,7 +384,7 @@ func tcpTestAll(cfg *Config, nodes []string) []*NodeResult {
 			return r, r != nil
 		}, pp, "")
 
-	logf("TCP 测试完成！")
+	logf("✅ TCP 测试完成！")
 	return results
 }
 
@@ -392,7 +408,7 @@ func buildCandidates(cfg *Config, results []*NodeResult, countryNodes map[string
 		for _, r := range results[:limit] {
 			candidates = append(candidates, r.Node)
 		}
-		logf("\nTCP 最优前 %d 个节点进入候选池。", len(candidates))
+		logf("\n🎯 TCP 最优前 %d 个节点进入候选池。", len(candidates))
 		return candidates
 	}
 
@@ -417,7 +433,7 @@ func buildCandidates(cfg *Config, results []*NodeResult, countryNodes map[string
 			candidates = append(candidates, r.Node)
 		}
 	}
-	logf("\n各国家候选池分配：共 %d 个国家，每国最多 %d 个候选，总计 %d 个节点进入候选池。", totalCountries, baseLimit, len(candidates))
+	logf("\n🎯 各国家候选池分配：共 %d 个国家，每国最多 %d 个候选，总计 %d 个节点进入候选池。", totalCountries, baseLimit, len(candidates))
 	return candidates
 }
 

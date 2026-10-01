@@ -75,18 +75,28 @@ func parseSourceURL(s string) (*url.URL, bool) {
 	return u, true
 }
 
-// displayWidth 估算终端显示宽度：CJK / 全角字符占 2 列。
+// displayWidth 估算终端显示宽度：CJK / 全角字符 / emoji 占 2 列。
 // 汇总表里中英混排，若按 rune 数对齐会错位（tabwriter 不识别显示宽度）。
 func displayWidth(s string) int {
 	w := 0
 	for _, r := range s {
-		if isWideRune(r) {
-			w += 2
-		} else {
-			w++
-		}
+		w += runeWidth(r)
 	}
 	return w
+}
+
+// runeWidth 单个字符的显示宽度：
+//   - 变体选择符（U+FE0F）与零宽连接符（U+200D）不占宽度
+//   - 表情/图标按 2 列计（emoji 通常在终端与浏览器里都渲染成双宽）
+//   - CJK 与全角字符按 2 列计，其余 1 列
+func runeWidth(r rune) int {
+	switch {
+	case r == 0xFE0F || r == 0xFE0E || r == 0x200D:
+		return 0
+	case isWideRune(r):
+		return 2
+	}
+	return 1
 }
 
 func isWideRune(r rune) bool {
@@ -98,10 +108,68 @@ func isWideRune(r rune) bool {
 		r >= 0xFE30 && r <= 0xFE6F, // CJK 兼容形式
 		r >= 0xFF00 && r <= 0xFF60, // 全角字符
 		r >= 0xFFE0 && r <= 0xFFE6,
+		r >= 0x1F000 && r <= 0x1F02F, // 麻将/多米诺等
+		r >= 0x1F0A0 && r <= 0x1F0FF,
+		r >= 0x1F300 && r <= 0x1F5FF, // 杂项符号与图形
+		r >= 0x1F600 && r <= 0x1F64F, // 表情
+		r >= 0x1F680 && r <= 0x1F6FF, // 交通与地图符号
+		r >= 0x1F7E0 && r <= 0x1F7EB, // 彩色圆/方块
+		r >= 0x1F900 && r <= 0x1F9FF, // 补充符号
+		r >= 0x1FA70 && r <= 0x1FAFF,
 		r >= 0x20000 && r <= 0x3FFFD: // CJK 扩展
 		return true
 	}
+	// 常见图形符号（⚠ ✅ ❌ ⏱…）：Unicode 归类为 Ambiguous，
+	// 终端多按 1 列渲染，这里保守按 1 列处理，避免统计偏宽。
 	return false
+}
+
+// humanCount 给四位以上数字加千分位分隔，长数字在日志里更易读
+func humanCount(n int) string {
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	s := strconv.Itoa(n)
+	if len(s) > 3 {
+		var b strings.Builder
+		pre := len(s) % 3
+		if pre > 0 {
+			b.WriteString(s[:pre])
+		}
+		for i := pre; i < len(s); i += 3 {
+			if b.Len() > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(s[i : i+3])
+		}
+		s = b.String()
+	}
+	if neg {
+		return "-" + s
+	}
+	return s
+}
+
+// stageIcons 每道筛选工序的图标（日志里一眼看清当前跑到哪一步）
+var stageIcons = map[string]string{
+	"抓取":     "📥",
+	"去重合并":   "🧹",
+	"前置过滤":   "🚧",
+	"TCP通过":  "🔌",
+	"候选池":    "🎯",
+	"可用通过":   "🩺",
+	"HTTP通过": "🌐",
+	"带宽通过":   "🚀",
+	"最终入选":   "🏆",
+	"DNS写入":  "📡",
+}
+
+func stageIcon(stage string) string {
+	if ic, ok := stageIcons[stage]; ok {
+		return ic + " "
+	}
+	return "• "
 }
 
 // sieveStats 筛子统计器（非并发安全：全部调用都在主流程单线程中）
@@ -215,11 +283,26 @@ func (s *sieveStats) logStage(stage string, row []int) {
 	for _, n := range row {
 		total += n
 	}
+	icon := stageIcon(stage)
 
 	if prev == nil {
-		logf("\n[筛子] %s：合计 %d 个节点", stage, total)
+		dead := 0
+		for _, n := range row {
+			if n == 0 {
+				dead++
+			}
+		}
+		head := fmt.Sprintf("[筛子] %s%s：合计 %s 个节点（%d 个源", icon, stage, humanCount(total), len(s.labels))
+		if dead > 0 {
+			head += fmt.Sprintf("，⚠️ %d 个无数据", dead)
+		}
+		logf("\n%s）", head)
 		for i, label := range s.labels {
-			logf("       %s  %d", padRight(label, s.labelWidth()), row[i])
+			note := ""
+			if row[i] == 0 {
+				note = "  ⚠️ 本条数据源本轮无数据"
+			}
+			logf("       %s  %s%s", padRight(label, s.labelWidth()), humanCount(row[i]), note)
 		}
 		return
 	}
@@ -228,12 +311,26 @@ func (s *sieveStats) logStage(stage string, row []int) {
 	for _, n := range prev {
 		prevTotal += n
 	}
-	logf("\n[筛子] %s：合计 %d → %d", stage, prevTotal, total)
+	keep := ""
+	if prevTotal > 0 {
+		keep = fmt.Sprintf("  保留 %.1f%%", float64(total)/float64(prevTotal)*100)
+	}
+	logf("\n[筛子] %s%s：合计 %s → %s%s", icon, stage, humanCount(prevTotal), humanCount(total), keep)
+
+	changed := 0
 	for i, label := range s.labels {
 		if row[i] == prev[i] {
 			continue
 		}
-		logf("       %s  %d → %d", padRight(label, s.labelWidth()), prev[i], row[i])
+		changed++
+		note := ""
+		if row[i] == 0 && prev[i] > 0 {
+			note = "  ⚠️ 已清零"
+		}
+		logf("       %s  %s → %s%s", padRight(label, s.labelWidth()), humanCount(prev[i]), humanCount(row[i]), note)
+	}
+	if changed == 0 {
+		logf("       （各数据源均无变化）")
 	}
 }
 
@@ -262,7 +359,7 @@ func (s *sieveStats) printSummary() {
 		return
 	}
 
-	logf("\n================ 数据源 × 筛选工序 汇总 ================")
+	logf("\n============ 📊 数据源 × 筛选工序 汇总 ============")
 	for _, label := range s.labels {
 		if full := s.fulls[label]; full != label {
 			logf("  %s = %s", label, full)
@@ -271,12 +368,17 @@ func (s *sieveStats) printSummary() {
 
 	// 组装表格：表头 + 每源一行 + 合计行
 	rows := make([][]string, 0, len(s.labels)+2)
-	rows = append(rows, append([]string{"数据源"}, s.stageNames...))
+	head := make([]string, 0, len(s.stageNames)+1)
+	head = append(head, "数据源")
+	for _, st := range s.stageNames {
+		head = append(head, strings.TrimSpace(stageIcon(st))+st)
+	}
+	rows = append(rows, head)
 	for i, label := range s.labels {
 		row := make([]string, 1, len(s.stageNames)+1)
 		row[0] = label
 		for _, counts := range s.stageCounts {
-			row = append(row, strconv.Itoa(counts[i]))
+			row = append(row, humanCount(counts[i]))
 		}
 		rows = append(rows, row)
 	}
@@ -287,7 +389,7 @@ func (s *sieveStats) printSummary() {
 		for _, n := range counts {
 			sum += n
 		}
-		totalRow = append(totalRow, strconv.Itoa(sum))
+		totalRow = append(totalRow, humanCount(sum))
 	}
 	rows = append(rows, totalRow)
 
@@ -327,5 +429,21 @@ func (s *sieveStats) printSummary() {
 			logf("%s", sep.String()) // 合计行前加分隔线
 		}
 	}
-	logf("（每列为该工序结束后的剩余节点数，合计行即当轮总量）")
+
+	// 失效源单列出来，一眼看到「哪个源本轮没产出」
+	var dead []string
+	for i, label := range s.labels {
+		if s.stageCounts[0][i] == 0 {
+			dead = append(dead, label)
+		}
+	}
+	if len(dead) > 0 {
+		logf("⚠️  以下数据源本轮未解析出任何节点（源站失效 / 被限流 / 网络不可达）:")
+		for _, label := range dead {
+			logf("      · %s", label)
+		}
+	} else {
+		logf("✅ 全部数据源本轮均有产出。")
+	}
+	logf("💡 每列为该工序结束后的剩余节点数，合计行即当轮总量。")
 }

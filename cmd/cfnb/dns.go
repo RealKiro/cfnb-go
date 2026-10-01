@@ -164,7 +164,7 @@ func batchUpdateCloudflareDNS(
 			if workers > len(ips) {
 				workers = len(ips)
 			}
-			logf("正在并发查询 %d 个 IP 的风险等级（并发 %d）...", len(ips), workers)
+			logf("☣️  正在并发查询 %d 个 IP 的风险等级（并发 %d）...", len(ips), workers)
 			client := newHTTPClient(10*time.Second, 10*time.Second, true)
 			results := parallelRun(ips, workers, func(ip string) string {
 				return getIPRiskLevel(client, ip)
@@ -210,7 +210,7 @@ func batchUpdateCloudflareDNS(
 			// 国家黑名单过滤
 			if len(blockedSet) > 0 && strings.Contains(nodeStr, "#") {
 				tag := nodeStr[strings.LastIndex(nodeStr, "#")+1:]
-				country := strings.ToUpper(strings.Fields(tag)[0])
+				country := strings.ToUpper(firstField(tag))
 				if _, blocked := blockedSet[country]; blocked {
 					filteredByCtry++
 					continue
@@ -321,7 +321,7 @@ func batchUpdateCloudflareDNS(
 	if recordType == "TXT" {
 		unit = "IP:端口"
 	}
-	logf("\n准备将以下 %d 个%s 更新到 Cloudflare DNS（记录类型 %s）:", len(dnsContentList), unit, recordType)
+	logf("\n📡 准备将以下 %d 个%s 更新到 Cloudflare DNS（记录类型 %s）:", len(dnsContentList), unit, recordType)
 	speedMap := make(map[string]float64, len(bwResults))
 	for _, r := range bwResults {
 		speedMap[r.Node] = r.Speed
@@ -356,9 +356,9 @@ func batchUpdateCloudflareDNS(
 		err := submitDNSRecords(cfg, client, recordType, dnsContentList)
 		if err == nil {
 			if recordType == "A" {
-				logf("Cloudflare DNS 批量更新成功！已将 %s 指向 %d 个 IP。", cfg.CFDNSRecordName, len(dnsContentList))
+				logf("🎉 Cloudflare DNS 批量更新成功！已将 %s 指向 %d 个 IP。", cfg.CFDNSRecordName, len(dnsContentList))
 			} else {
-				logf("Cloudflare TXT 记录批量更新成功！共 %d 条记录，每条内容为一个 IP:端口。", len(dnsContentList))
+				logf("🎉 Cloudflare TXT 记录批量更新成功！共 %d 条记录，每条内容为一个 IP:端口。", len(dnsContentList))
 			}
 			return dnsNodeList
 		}

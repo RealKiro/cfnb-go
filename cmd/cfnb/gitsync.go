@@ -56,7 +56,7 @@ func syncToGitHub(cfg *Config, notifier *Notifier) {
 		logf("\n正在同步到 GitHub (尝试 %d/%d)...", attempt, cfg.GitHubSyncMaxRetries)
 		lastErr = pushFileToGitHub(cfg, client, apiBase, path, branch, content)
 		if lastErr == nil {
-			logf("已自动推送到 GitHub。")
+			logf("✅ 已自动推送到 GitHub。")
 			return
 		}
 		logf("推送失败: %v", lastErr)

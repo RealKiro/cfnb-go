@@ -139,7 +139,7 @@ func availabilityFilterCandidates(cfg *Config, candidates []string) ([]string, m
 		return candidates, map[string]string{}
 	}
 
-	logf("\n对 %d 个候选节点进行可用性二次筛选...", len(candidates))
+	logf("\n🩺 对 %d 个候选节点进行可用性二次筛选...", len(candidates))
 	client := newHTTPClient(
 		time.Duration(cfg.AvailabilityConnectTimout)*time.Second,
 		time.Duration(cfg.AvailabilityTimeout)*time.Second,
@@ -171,7 +171,7 @@ func availabilityFilterWithRetry(cfg *Config, candidates []string, notifier *Not
 		logf("\n[可用性检测] 第 %d 轮检测...", attempt)
 		passed, stacks := availabilityFilterCandidates(cfg, candidates)
 		if len(passed) > 0 {
-			logf("可用性检测通过 %d 个节点", len(passed))
+			logf("✅ 可用性检测通过 %d 个节点", len(passed))
 			return passed, stacks
 		}
 		if attempt < cfg.AvailabilityRetryMax {
@@ -180,7 +180,7 @@ func availabilityFilterWithRetry(cfg *Config, candidates []string, notifier *Not
 		}
 	}
 
-	logf("可用性检测经 %d 轮重试后仍无节点通过。", cfg.AvailabilityRetryMax)
+	logf("❌ 可用性检测经 %d 轮重试后仍无节点通过。", cfg.AvailabilityRetryMax)
 	notifier.Send(
 		fmt.Sprintf("IP 可用性检测经 %d 轮重试后仍无节点通过，已跳过过滤，使用原候选列表继续。", cfg.AvailabilityRetryMax),
 		"可用性检测全部失败",
@@ -297,9 +297,9 @@ func httpServerFilter(cfg *Config, candidates []string, notifier *Notifier) ([]s
 
 	for round := 1; round <= cfg.HTTPTestMaxRounds; round++ {
 		logf("\n[HTTP检测] 第 %d 轮检测...", round)
-		logf("\n对 %d 个候选节点进行 HTTP 二次筛选...", len(candidates))
+		logf("\n🌐 对 %d 个候选节点进行 HTTP 二次筛选...", len(candidates))
 
-		pp := newProgressPrinter(cfg.ProgressPrintInterval, "[HTTP检测]")
+		pp := newProgressPrinter(cfg.ProgressPrintInterval, "🌐 [HTTP检测]")
 		passed, _ := parallelRunProgress(candidates, cfg.HTTPTestWorkers,
 			func(node string) (HTTPResult, bool) {
 				r := checkHTTPServer(cfg, client, node)
@@ -316,7 +316,7 @@ func httpServerFilter(cfg *Config, candidates []string, notifier *Notifier) ([]s
 		}
 
 		if len(passedNodes) > 0 {
-			logf("HTTP检测通过 %d 个节点", len(passedNodes))
+			logf("✅ HTTP检测通过 %d 个节点", len(passedNodes))
 			return passedNodes, latencyMap, jitterMap
 		}
 		if round < cfg.HTTPTestMaxRounds {
@@ -430,8 +430,8 @@ func bandwidthFilter(cfg *Config, candidates []string) []BandwidthResult {
 		return nil
 	}
 
-	logf("\n开始带宽测速（对前 %d 个节点，并发 %d，超时 %ds）...", len(candidates), cfg.BandwidthWorkers, cfg.BandwidthTimeout)
-	pp := newProgressPrinter(cfg.ProgressPrintInterval, "[带宽测速]")
+	logf("\n🚀 开始带宽测速（对前 %d 个节点，并发 %d，超时 %ds）...", len(candidates), cfg.BandwidthWorkers, cfg.BandwidthTimeout)
+	pp := newProgressPrinter(cfg.ProgressPrintInterval, "🚀 [带宽测速]")
 	results, _ := parallelRunProgress(candidates, cfg.BandwidthWorkers,
 		func(node string) (BandwidthResult, bool) {
 			r := measureBandwidth(cfg, node)

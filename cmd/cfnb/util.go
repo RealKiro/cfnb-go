@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -16,6 +17,17 @@ type doneGroup = sync.WaitGroup
 // logf 统一日志输出（带时间戳在容器日志中更易排查）
 func logf(format string, args ...any) {
 	fmt.Printf(format+"\n", args...)
+}
+
+// firstField 返回按空白切分后的第一段，无内容时返回空串。
+// 节点标签在「无国家标签」或「标签为纯空白」时会是空串，
+// 直接写 strings.Fields(s)[0] 会越界 panic（切片长度为 0），这里统一兜住。
+func firstField(s string) string {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 // newHTTPClient 构造带连接/读取超时分离的客户端。
@@ -57,12 +69,28 @@ func applyForceDirect() {
 	os.Setenv("NO_PROXY", "*")
 }
 
-// progressPrinter 进度打印器（按间隔节流，避免频繁 I/O）
+// stdoutIsTerminal 判断标准输出是否为交互终端。
+// docker logs / 重定向到文件 / 管道都不是终端，此时若进度仍用 \r 覆盖同一行，
+// 落盘的日志会把几十次刷新挤成一行（HTML 日志查看器里尤其明显）。
+var stdoutIsTerminal = func() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}()
+
+// progressPrinter 进度打印器。
+//   - 终端：\r 原地刷新 + 按时间间隔节流（原来的行为，视觉最紧凑）
+//   - 非终端：换行输出，且只在跨过 10% 档位或跑到 100% 时打印一行，
+//     这样日志里是一串可读的里程碑，而不是一行乱码
 type progressPrinter struct {
 	mu       sync.Mutex
 	last     time.Time
 	interval time.Duration
 	prefix   string
+
+	nextBucket int // 非终端模式：下一个待打印的百分比档位
 }
 
 func newProgressPrinter(interval float64, prefix string) *progressPrinter {
@@ -70,29 +98,50 @@ func newProgressPrinter(interval float64, prefix string) *progressPrinter {
 		interval = 1
 	}
 	return &progressPrinter{
-		interval: time.Duration(interval * float64(time.Second)),
-		prefix:   prefix,
+		interval:   time.Duration(interval * float64(time.Second)),
+		prefix:     prefix,
+		nextBucket: 10,
 	}
 }
 
 func (p *progressPrinter) update(done, total int, extra string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	pct := 0.0
+	if total > 0 {
+		pct = float64(done) / float64(total) * 100
+	}
+
+	if !stdoutIsTerminal {
+		// 非终端：按 10% 档位换行输出，避免刷屏也避免 \r 粘连
+		atEnd := done >= total
+		if !atEnd && pct < float64(p.nextBucket) {
+			return
+		}
+		for pct >= float64(p.nextBucket) {
+			p.nextBucket += 10
+		}
+		fmt.Printf("%s 进度：%d/%d (%.1f%%)%s\n", p.prefix, done, total, pct, extra)
+		return
+	}
+
+	// 终端：沿用 \r 原地刷新
 	now := time.Now()
 	if now.Sub(p.last) < p.interval && done != total {
 		return
 	}
 	p.last = now
-	pct := 0.0
-	if total > 0 {
-		pct = float64(done) / float64(total) * 100
-	}
 	fmt.Printf("\r%s 进度：%d/%d (%.1f%%)%s", p.prefix, done, total, pct, extra)
 }
 
 func (p *progressPrinter) doneLine() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !stdoutIsTerminal {
+		// 非终端模式下每条进度自带换行，无需再补空行
+		return
+	}
 	fmt.Println()
 }
 

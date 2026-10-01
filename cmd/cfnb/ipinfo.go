@@ -393,7 +393,10 @@ func applyCache(nodes []string, cache map[string]string) {
 	for i, node := range nodes {
 		ipport, _, _ := strings.Cut(node, "#")
 		if tag, ok := cache[ipport]; ok && tag != "" {
-			code := strings.Fields(tag)[0]
+			code := firstField(tag)
+			if code == "" {
+				continue // 缓存值只有空白：回写会造出 "#" 空标签，不如保持原样
+			}
 			nodes[i] = ipport + "#" + code
 		}
 	}
@@ -419,7 +422,7 @@ func queryNewIPs(
 	}
 
 	logf("需要查询 %d 个新 IP...", len(ips))
-	pp := newProgressPrinter(cfg.ProgressPrintInterval, "[地区校准]")
+	pp := newProgressPrinter(cfg.ProgressPrintInterval, "🗺️  [地区校准]")
 
 	total := len(ips)
 	results, okInputs := parallelRunProgress(ips, maxInt(1, cfg.IPCalibrationConcurrency),
