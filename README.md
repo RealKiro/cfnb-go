@@ -101,7 +101,7 @@ cfnb.exe           # Windows
 
 ### 方式三：Docker（推荐）
 
-镜像由 GitHub Actions 自动构建并推送到 GHCR，支持 `amd64` / `arm64`，**默认直接拉取官方镜像，无需本地构建**：
+镜像由 GitHub Actions 自动构建并推送到 GHCR，支持 `amd64` / `arm64`。**compose 只从 GHCR 拉取镜像，不做本地构建**，因此无需安装 Go 工具链、也不会下载 `golang` 基础镜像：
 
 ```bash
 # 1. 进入项目目录
@@ -113,7 +113,6 @@ cd /path/to/cfnb-go
 touch ip.txt
 
 # 4. 启动（默认拉取 ghcr.io/realkiro/cfnb-go:latest，每 5 分钟自动运行一次）
-#    compose 文件位于 deploy/，构建上下文为仓库根目录
 docker compose -f deploy/docker-compose.yml up -d
 
 # 5. 查看日志
@@ -125,7 +124,7 @@ docker compose -f deploy/docker-compose.yml logs -f
 ```bash
 cp deploy/.env.example deploy/.env
 # 用自己 fork 的镜像：CFNB_IMAGE=ghcr.io/<你的用户名>/cfnb-go:latest
-# 从源码本地构建：    CFNB_PULL_POLICY=build  然后 up -d --build
+# 想每次都检查镜像更新：CFNB_PULL_POLICY=always
 ```
 
 不想用 Compose 也可以直接 `docker run`：
@@ -143,8 +142,8 @@ docker run -d --name cfnb-go \
 | :--- | :--- |
 | 镜像地址 | 默认 `ghcr.io/realkiro/cfnb-go:latest`（另有 `1.0.0` / `1.0` 版本标签与 `sha-xxxxxxx` 精确提交标签） |
 | 镜像来源 | 环境变量 `CFNB_IMAGE` 注入；**未设置时回退为官方镜像 `ghcr.io/realkiro/cfnb-go:latest`**，fork 用户可在 `deploy/.env` 里改成自己的地址 |
-| 拉取策略 | 环境变量 `CFNB_PULL_POLICY`，默认 `missing`（本地无缓存时才拉取，不会自动本地构建）。可选 `always` / `never` / `build` |
-| 本地构建 | `CFNB_PULL_POLICY=build docker compose -f deploy/docker-compose.yml up -d --build`（或直接 `docker build -f deploy/Dockerfile -t cfnb-go:local .`，context 须为仓库根目录） |
+| 拉取策略 | 环境变量 `CFNB_PULL_POLICY`，默认 `missing`（本地无缓存时才拉取）。可选 `always`（每次 up 检查更新）/ `never`（只用本地已有镜像，不联网） |
+| 镜像构建 | **只由 CI 构建**：compose 无 `build` 段，本地不编译镜像。需要自定义镜像时请 fork 后改代码，由 CI 推送你自己的 GHCR（`deploy/Dockerfile` 仅被 CI 引用） |
 | `RUN_INTERVAL` | 循环间隔（秒）。默认 `0` = 只运行一次；compose 默认设为 `300`（5 分钟） |
 | 挂载 `configs/config.json` | 修改参数无需重建镜像；也可用 `CFNB_CONFIG` 环境变量指定容器内其他配置路径 |
 | 手动运行一次 | `docker compose -f deploy/docker-compose.yml run --rm cfnb`（临时忽略循环需加 `-e RUN_INTERVAL=0`） |
@@ -238,8 +237,8 @@ docker run -d --name cfnb-go \
 ├── configs/
 │   └── config.json            # 配置文件（含逐项注释）
 ├── deploy/                    # 部署相关
-│   ├── Dockerfile             # Alpine 多阶段构建
-│   ├── docker-compose.yml     # 一键部署（构建上下文指向仓库根）
+│   ├── Dockerfile             # Alpine 多阶段构建（由 CI 使用，compose 不引用）
+│   ├── docker-compose.yml     # 一键部署（从 GHCR 拉取镜像）
 │   ├── docker-entrypoint.sh   # 容器入口（定时循环 / 参数透传）
 │   └── .env.example           # 镜像名等环境变量模板
 ├── go.mod

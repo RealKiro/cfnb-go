@@ -66,6 +66,12 @@ jobs:
           assert_contains "ghcr.io/realkiro/cfnb-go:latest" /tmp/cfg-default.yml
           assert_contains "pull_policy: missing" /tmp/cfg-default.yml
 
+          echo "=== 断言 compose 只拉取、不含 build 段 ==="
+          if grep -qE "^[[:space:]]+build:" /tmp/cfg-default.yml; then
+            echo "  FAIL compose 不应包含 build 段（镜像一律从 GHCR 拉取）"; exit 1
+          fi
+          echo "  OK   compose 无 build 段"
+
           echo "=== 覆盖变量 ==="
           CFNB_IMAGE=ghcr.io/example/cfnb-go:v9 CFNB_PULL_POLICY=never \
             docker compose -f deploy/docker-compose.yml config > /tmp/cfg-override.yml
@@ -85,6 +91,8 @@ jobs:
             echo '```yaml'
             grep -E "^[[:space:]]+(image|pull_policy):" /tmp/cfg-override.yml || true
             echo '```'
+            echo
+            echo '无 `build` 段 —— 镜像一律从 GHCR 拉取，本地不构建'
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ============ 阶段二：多架构构建并推送 GHCR（PR 时跳过）============
