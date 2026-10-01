@@ -59,10 +59,33 @@ jobs:
             if grep -q -- "$1" "$2"; then echo "  OK   $1"; else echo "  FAIL 期望包含: $1"; exit 1; fi
           }
 
-          echo "=== 断言运行时数据统一走 ./data/ 单点相对路径 ==="
-          assert_contains "source: ./data/config.json" deploy/docker-compose.yml
-          assert_contains "source: ./data/ip.txt" deploy/docker-compose.yml
-          if grep -qE "^[[:space:]]+source: \.\." deploy/docker-compose.yml; then
+          echo "=== 原始 compose 文件断言（剥掉注释行后做字面量匹配）==="
+          # 为什么不在 `docker compose config` 的输出上断言？
+          # 实测该命令的归一化输出**不含** bind.create_host_path（计数为 0），
+          # 长语法 / create_host_path 只能在源文件上校验。
+          ACTIVE=/tmp/compose-active.yml
+          grep -vE "^[[:space:]]*#" deploy/docker-compose.yml > "$ACTIVE"
+
+          assert_active() {
+            if grep -qF -- "$1" "$ACTIVE"; then echo "  OK   $1"; else echo "  FAIL 期望包含: $1"; exit 1; fi
+          }
+
+          assert_active "type: bind"
+          assert_active "source: ./data/config.json"
+          assert_active "source: ./data/ip.txt"
+          assert_active "target: /app/config.json"
+          assert_active "target: /app/ip.txt"
+          assert_active "create_host_path: false"
+
+          COUNT=$(grep -cF -- "create_host_path: false" "$ACTIVE" || true)
+          if [ "${COUNT:-0}" -ne 2 ]; then
+            echo "  FAIL 期望恰好 2 处 create_host_path: false（config.json 与 ip.txt），实际 ${COUNT:-0}"
+            echo "       （宿主路径缺失时 Docker 会创建同名目录，导致程序把目录当文件读写）"
+            exit 1
+          fi
+          echo "  OK   create_host_path: false × $COUNT"
+
+          if grep -qE "source: \.\." "$ACTIVE"; then
             echo "  FAIL 挂载源不应再出现 ../（已收口到 compose 同目录的 data/）"; exit 1
           fi
           echo "  OK   挂载源无 ../"
@@ -79,19 +102,8 @@ jobs:
           fi
           echo "  OK   compose 无 build 段"
 
-          echo "=== 断言挂载用长语法且禁止自动建目录 ==="
-          COUNT=$(grep -c "create_host_path: false" /tmp/cfg-default.yml || true)
-          if [ "${COUNT:-0}" -lt 2 ]; then
-            echo "  FAIL 期望至少 2 处 create_host_path: false（config.json 与 ip.txt），实际 ${COUNT:-0}"
-            echo "       （宿主路径缺失时 Docker 会创建同名目录，导致程序把目录当文件读写）"
-            exit 1
-          fi
-          echo "  OK   create_host_path: false × $COUNT"
-          assert_contains "target: /app/ip.txt" /tmp/cfg-default.yml
-          assert_contains "target: /app/config.json" /tmp/cfg-default.yml
-          # 渲染后的 source 已被 compose 归一化（绝对路径），只断言末尾路径片段以保持兼容
-          assert_contains "data/ip.txt" /tmp/cfg-default.yml
-          assert_contains "data/config.json" /tmp/cfg-default.yml
+          echo "=== 渲染后的挂载块（仅打印供人工核对，不做断言）==="
+          grep -nE "volumes:|source:|target:|bind:|create_host_path:" /tmp/cfg-default.yml || true
 
           echo "=== 覆盖变量 ==="
           CFNB_IMAGE=ghcr.io/example/cfnb-go:v9 CFNB_PULL_POLICY=never \
@@ -115,13 +127,16 @@ jobs:
             echo
             echo '无 `build` 段 —— 镜像一律从 GHCR 拉取，本地不构建'
             echo
-            echo '**挂载（长语法，禁止自动建目录）**'
+            echo '**挂载（源文件断言：长语法 + create_host_path: false）**'
             echo '```yaml'
-            grep -E "source:|target:|create_host_path:" /tmp/cfg-default.yml || true
+            grep -vE "^[[:space:]]*#" deploy/docker-compose.yml | sed -n '/^    volumes:/,$p' || true
             echo '```'
             echo
             echo '宿主路径收口在 `deploy/data/`（compose 中写作单点相对路径 `./data/...`），'
             echo '`config.json` 与 `ip.txt` 均随仓库分发，克隆后 `docker compose up -d` 即可运行。'
+            echo
+            echo '> 注：`docker compose config` 的归一化输出不保留 `bind.create_host_path`，'
+            echo '> 因此长语法相关断言全部在原始 compose 文件上做。'
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ============ 阶段二：多架构构建并推送 GHCR（PR 时跳过）============
