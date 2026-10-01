@@ -1,12 +1,12 @@
 # 敏感配置与运行产物
 /config.json
-/deploy/data/config.json
 valid_tokens.txt
 ipinfo_cache.txt
 ip.txt
-# 例外：deploy/data/ip.txt 是随仓库分发的空白结果文件，
-# 有了它宿主挂载路径天然存在，「docker compose up -d」开箱即用（tracked 文件不受上面规则影响）
-!/deploy/data/ip.txt
+# 例外：deploy/app/ 下的两个文件随仓库分发（配置模板 + 空白结果文件），
+# 已纳入版本控制；这里显式豁免，防止上面的 ip.txt 规则误伤
+!/deploy/app/config.json
+!/deploy/app/ip.txt
 *.log
 .env
 .run.lock

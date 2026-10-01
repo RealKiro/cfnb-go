@@ -15,10 +15,11 @@ fi
 
 cd /app
 
-# 兜底检测：bind mount 的宿主路径不存在时，Docker（短语法）会把它创建成
-# 同名目录，于是程序把目录当文件读写而失败——ip.txt 写失败还会连带跳过
-# Cloudflare DNS 更新与 GitHub 同步。compose 已用长语法规避，这里再兜一层，
-# 覆盖 docker run -v 等短语法场景，把问题在启动阶段就明确报出来。
+# 挂载点检测：bind mount 的宿主路径不存在时，Docker 会「静默把它创建成同名
+# 目录」（compose 短语法与 docker run -v 都是这个行为），于是程序把目录当文件
+# 读写而失败——ip.txt 写失败还会连带跳过 Cloudflare DNS 更新与 GitHub 同步。
+# compose 用的是短语法，这里就是唯一的防线：发现挂载点其实是目录时，
+# 在启动阶段就把问题明确报出来，而不是让程序默默跑废一整轮。
 check_not_dir() {
     if [ -d "$1" ]; then
         echo "[entrypoint] 错误：$1 是目录，不是文件。" >&2
@@ -28,8 +29,8 @@ check_not_dir() {
         exit 1
     fi
 }
-check_not_dir /app/config.json deploy/data/config.json
-check_not_dir /app/ip.txt      deploy/data/ip.txt
+check_not_dir /app/config.json deploy/app/config.json
+check_not_dir /app/ip.txt      deploy/app/ip.txt
 
 INTERVAL="${RUN_INTERVAL:-0}"
 

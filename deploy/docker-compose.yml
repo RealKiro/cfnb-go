@@ -1,16 +1,16 @@
 # docker-compose.yml
 # 位置：deploy/ 目录；镜像一律从 GHCR 拉取，不支持本地构建
 #
-# 运行时数据都在同目录的 data/ 下（路径只用一个点，base 是本文件所在目录）：
-#   data/config.json  仓库自带模板，改好令牌即可
-#   data/ip.txt       仓库自带空白文件，程序运行后写入优选结果
+# 运行时数据都在同目录的 app/ 下，宿主与容器同名，对应关系一眼可见：
+#   ./app/config.json  <->  /app/config.json    配置模板（仓库自带，改好令牌即可）
+#   ./app/ip.txt       <->  /app/ip.txt         空白结果文件（程序运行时覆盖写入）
 #
-# 为什么必须显式设置 create_host_path: false？
-#   Docker 短语法 bind mount 在宿主路径不存在时「总是创建为目录」，
-#   于是容器内 /app/ip.txt 会变成目录，程序写入时报 is a directory，
-#   并跳过 Cloudflare DNS 更新与 GitHub 同步。
-#   本文件改用长语法并显式设置 create_host_path: false，
-#   路径缺失时会在启动阶段直接报错，而不是静默建目录。
+# 关于挂载语法：用短语法 ./app/x:/app/x，只一个点、左右同名。
+# 需要知道的一点——短语法在宿主路径不存在时，Docker 会「静默把它创建成同名目录」，
+# 于是容器内 /app/ip.txt 变成目录，程序写失败并连带跳过 Cloudflare DNS 更新与
+# GitHub 同步。两个文件都随仓库分发（已被 git 跟踪），正常情况不会缺失；
+# 万一被手工删掉，容器入口会检测到挂载点其实是目录，打印修复指引后退出
+# （见 docker-entrypoint.sh 的 check_not_dir）。
 #
 # 镜像来源由两个环境变量决定（支持 deploy/.env，参考 deploy/.env.example）：
 #   CFNB_IMAGE        默认 ghcr.io/realkiro/cfnb-go:latest（官方镜像，开箱即用）
@@ -21,8 +21,8 @@
 #   docker compose logs -f          查看日志
 #   用自己 fork 的镜像：CFNB_IMAGE=ghcr.io/<你的用户名>/cfnb-go:latest docker compose up -d
 #
-# 路径说明：volumes 的相对路径基于「本文件所在目录」解析（本文件在 deploy/），
-# 因此 ./data/ 即 deploy/data/；compose 规范要求相对路径必须以 . 或 .. 开头。
+# 路径说明：相对路径基于「本文件所在目录」解析（本文件在 deploy/），
+# 因此 ./app/ 即 deploy/app/；compose 规范要求相对路径必须以 . 或 .. 开头。
 #
 # 也可从仓库根执行：docker compose -f deploy/docker-compose.yml up -d
 
@@ -40,26 +40,9 @@ services:
       - TZ=Asia/Shanghai
       # - CFNB_CONFIG=/app/config.json  # 可选：显式指定配置文件路径
     volumes:
-      # 主配置（含 Cloudflare / WxPusher / GitHub 令牌）；仓库自带，不会缺失
-      - type: bind
-        source: ./data/config.json
-        target: /app/config.json
-        bind:
-          create_host_path: false
-      # 优选结果持久化；仓库自带空白文件，程序会覆盖写入
-      - type: bind
-        source: ./data/ip.txt
-        target: /app/ip.txt
-        bind:
-          create_host_path: false
-      # 以下两项启用 IP 地区校准时取消注释（需自行创建对应文件）
-      # - type: bind
-      #   source: ./data/valid_tokens.txt
-      #   target: /app/valid_tokens.txt
-      #   bind:
-      #     create_host_path: false
-      # - type: bind
-      #   source: ./data/ipinfo_cache.txt
-      #   target: /app/ipinfo_cache.txt
-      #   bind:
-      #     create_host_path: false
+      # 宿主 ./app/x <-> 容器 /app/x，左右同名
+      - ./app/config.json:/app/config.json
+      - ./app/ip.txt:/app/ip.txt
+      # 启用 IP 地区校准时取消注释（需自行创建对应文件）
+      # - ./app/valid_tokens.txt:/app/valid_tokens.txt
+      # - ./app/ipinfo_cache.txt:/app/ipinfo_cache.txt

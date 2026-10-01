@@ -93,10 +93,10 @@ CI 会自动交叉编译 6 个平台、把 `config.json` 一并打包进每个�
 # 1. 编译（Go 1.21+）
 go build -trimpath -ldflags="-s -w" -o cfnb ./cmd/cfnb
 
-# 2. 按需修改 deploy/data/config.json（Cloudflare / WxPusher / GitHub 令牌）
+# 2. 按需修改 deploy/app/config.json（Cloudflare / WxPusher / GitHub 令牌）
 
 # 3. 把配置放到二进制同目录后运行一次
-cp deploy/data/config.json .
+cp deploy/app/config.json .
 ./cfnb             # Linux / macOS
 cfnb.exe           # Windows
 
@@ -112,10 +112,10 @@ cfnb.exe           # Windows
 镜像由 GitHub Actions 自动构建并推送到 GHCR，支持 `amd64` / `arm64`。**compose 只从 GHCR 拉取镜像，不做本地构建**，因此无需安装 Go 工具链、也不会下载 `golang` 基础镜像：
 
 ```bash
-# 1. 进入 deploy 目录（所有相对路径以 compose 文件为基准）
+# 1. 进入 deploy 目录（compose 里的相对路径都以该文件所在目录为基准）
 cd /path/to/cfnb-go/deploy
 
-# 2. 按需修改 data/config.json（填入 Cloudflare / WxPusher / GitHub 令牌）
+# 2. 按需修改 app/config.json（填入 Cloudflare / WxPusher / GitHub 令牌）
 
 # 3. 启动（默认拉取 ghcr.io/realkiro/cfnb-go:latest，每 5 分钟自动运行一次）
 docker compose up -d
@@ -124,14 +124,32 @@ docker compose up -d
 docker compose logs -f
 ```
 
-运行时数据都在 `deploy/data/` 下，路径只用一个点：
+#### 映射目录：只需要 `deploy/app/`
 
-| 宿主文件 | 容器内 | 说明 |
+宿主和容器用**同一个名字**，映射关系左右对称，一眼能对上：
+
+| 宿主（你的硬盘） | 容器内 | 说明 |
 | :--- | :--- | :--- |
-| `deploy/data/config.json` | `/app/config.json` | 配置模板，仓库自带，改好令牌即可 |
-| `deploy/data/ip.txt` | `/app/ip.txt` | 空白结果文件，仓库自带，程序运行时覆盖写入 |
+| `deploy/app/config.json` | `/app/config.json` | 配置模板，仓库自带，改好令牌即可 |
+| `deploy/app/ip.txt` | `/app/ip.txt` | 空白结果文件，仓库自带，程序运行时覆盖写入 |
 
-两个文件都随仓库分发，所以克隆后**无需任何额外准备**，`docker compose up -d` 即可运行；程序退出后 `deploy/data/ip.txt` 就是优选结果。
+对应 compose 中的两行：
+
+```yaml
+volumes:
+  - ./app/config.json:/app/config.json
+  - ./app/ip.txt:/app/ip.txt
+```
+
+三个容易绕进去的点：
+
+- **需要存在的目录只有 `deploy/app/` 一个**（相对 `deploy/` 即 `./app/`）。它随仓库分发，克隆下来就有。
+- **`/app` 是容器内部的路径，不用你创建** —— 它是镜像里的工作目录，由 Dockerfile 的 `WORKDIR` 建好。两个 `app` 只是同名，一个在宿主、一个在容器。
+- **`./app/...` 的相对基准是 compose 文件所在目录**（`deploy/`），不是仓库根。在仓库根另建一个 `app/` 跟这个挂载毫无关系。
+
+两个文件都随仓库分发，所以克隆后**无需任何额外准备**，`docker compose up -d` 直接能跑；程序退出后 `deploy/app/ip.txt` 就是优选结果。
+
+> 两点预期行为：① `ip.txt` 每轮运行都会被重写，`git status` 会显示它变更过，属正常；② 万一这两个文件被手工删掉，Docker 会把缺失的宿主路径**静默创建成同名目录**，此时容器入口会打印修复指引后退出 —— 照提示执行 `rm -r deploy/app/xxx && git checkout -- deploy/app/xxx` 即可。
 
 也可以从仓库根执行（compose 的相对路径仍以 `deploy/` 为基准，不会错位）：
 
@@ -147,16 +165,18 @@ cp deploy/.env.example deploy/.env
 # 想每次都检查镜像更新：CFNB_PULL_POLICY=always
 ```
 
-不想用 Compose 也可以直接 `docker run`（用 `--mount` 而非 `-v`：宿主路径缺失时它会明确报错，而 `-v` 会静默创建目录）：
+不想用 Compose 也可以直接 `docker run`（在仓库根执行，宿主↔容器同样同名）：
 
 ```bash
 docker run -d --name cfnb-go \
   -e RUN_INTERVAL=300 \
   -e TZ=Asia/Shanghai \
-  --mount type=bind,source="$(pwd)"/deploy/data/config.json,target=/app/config.json \
-  --mount type=bind,source="$(pwd)"/deploy/data/ip.txt,target=/app/ip.txt \
+  -v "$(pwd)"/deploy/app/config.json:/app/config.json \
+  -v "$(pwd)"/deploy/app/ip.txt:/app/ip.txt \
   ghcr.io/realkiro/cfnb-go:latest
 ```
+
+> `-v` 与 compose 短语法一样，宿主路径缺失时会静默创建目录；容器入口的 `check_not_dir` 会兜住这种情况并报错退出。
 
 | 项 | 说明 |
 | :--- | :--- |
@@ -164,9 +184,9 @@ docker run -d --name cfnb-go \
 | 镜像来源 | 环境变量 `CFNB_IMAGE` 注入；**未设置时回退为官方镜像 `ghcr.io/realkiro/cfnb-go:latest`**，fork 用户可在 `deploy/.env` 里改成自己的地址 |
 | 拉取策略 | 环境变量 `CFNB_PULL_POLICY`，默认 `missing`（本地无缓存时才拉取）。可选 `always`（每次 up 检查更新）/ `never`（只用本地已有镜像，不联网） |
 | 镜像构建 | **只由 CI 构建**：compose 无 `build` 段，本地不编译镜像。需要自定义镜像时请 fork 后改代码，由 CI 推送你自己的 GHCR（`deploy/Dockerfile` 仅被 CI 引用） |
-| 挂载方式 | 长语法 bind + `create_host_path: false`：宿主文件缺失时启动即报错并指名路径，不会被静默创建成目录。两个挂载文件都随仓库分发，开箱即用；容器入口另有兜底检测，若发现挂载点被建成目录会打印修复指引后退出 |
+| 挂载方式 | 短语法 `./app/x:/app/x`，宿主与容器同名，只一个点。两个挂载文件都随仓库分发，开箱即用；若被手工删除，容器入口会检测到挂载点被 Docker 建成目录并打印修复指引后退出 |
 | `RUN_INTERVAL` | 循环间隔（秒）。默认 `0` = 只运行一次；compose 默认设为 `300`（5 分钟） |
-| 挂载 `deploy/data/config.json` | 修改参数无需重建镜像；也可用 `CFNB_CONFIG` 环境变量指定容器内其他配置路径 |
+| 挂载 `deploy/app/config.json` | 修改参数无需重建镜像；也可用 `CFNB_CONFIG` 环境变量指定容器内其他配置路径 |
 | 手动运行一次 | `docker compose -f deploy/docker-compose.yml run --rm cfnb`（临时忽略循环需加 `-e RUN_INTERVAL=0`） |
 | 调试 | `docker compose -f deploy/docker-compose.yml run --rm cfnb sh` |
 
@@ -183,7 +203,7 @@ docker run -d --name cfnb-go \
 
 ## ⚙️ 配置说明
 
-全部参数位于 `deploy/data/config.json`，文件内已带逐项注释。常用项速查：
+全部参数位于 `deploy/app/config.json`，文件内已带逐项注释。常用项速查：
 
 | 参数 | 默认值 | 说明 |
 | :--- | :--- | :--- |
@@ -256,7 +276,7 @@ docker run -d --name cfnb-go \
 │   ├── lock_windows.go        # 单实例锁（Windows 独占句柄）
 │   └── parse_test.go          # 单元测试
 ├── deploy/                    # 部署相关
-│   ├── data/                  # 运行时数据（挂载源，compose 中写作 ./data/...）
+│   ├── app/                   # 运行时数据（挂载源，compose 中写作 ./app/...）
 │   │   ├── config.json        # 配置文件模板（含逐项注释）
 │   │   └── ip.txt             # 空白结果文件，程序运行时覆盖写入
 │   ├── Dockerfile             # Alpine 多阶段构建（由 CI 使用，compose 不引用）
