@@ -1,0 +1,21 @@
+# 版本控制与 CI
+.git
+.github
+
+# 文档与许可
+*.md
+LICENSE
+
+# Docker 自身文件
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# 本地构建产物与运行产物（镜像内不需要）
+cfnb
+cfnb.exe
+ip.txt
+*.log
+ipinfo_cache.txt
+.env
+.run.lock

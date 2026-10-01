@@ -1,0 +1,16 @@
+# 敏感配置与运行产物
+config.json
+valid_tokens.txt
+ipinfo_cache.txt
+ip.txt
+*.log
+.env
+.run.lock
+cfnb
+cfnb.exe
+cfnb-go
+cfnb-go.exe
+
+# Go
+__debug_bin*
+vendor/

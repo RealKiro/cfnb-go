@@ -1,0 +1,516 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// version 版本号
+const version = "1.0.0"
+
+// globalForceDirect 强制直连开关（供工具层的客户端构造使用）
+var globalForceDirect bool
+
+func main() {
+	// 便于 CI 与容器内快速校验二进制可用性
+	for _, arg := range os.Args[1:] {
+		switch arg {
+		case "--version", "-v":
+			fmt.Printf("cfnb-go %s\n", version)
+			return
+		case "--help", "-h":
+			printUsage()
+			return
+		}
+	}
+
+	baseDir := exeDir()
+	cfg, err := LoadConfig(filepath.Join(baseDir, "config.json"))
+	if err != nil {
+		logf("错误：%v", err)
+		os.Exit(1)
+	}
+
+	globalForceDirect = cfg.ForceDirect
+	if cfg.ForceDirect {
+		applyForceDirect()
+	}
+
+	// 单实例锁：已有实例在跑则直接退出
+	lockPath := filepath.Join(baseDir, ".run.lock")
+	if !acquireSingleInstance(lockPath) {
+		logf("检测到本程序已在运行，本次启动自动退出。")
+		os.Exit(0)
+	}
+	defer releaseSingleInstance()
+
+	run(&cfg, baseDir)
+}
+
+func run(cfg *Config, baseDir string) {
+	notifier := NewNotifier(cfg)
+	printBanner(cfg)
+
+	// ---------- 1. 聚合数据源 ----------
+	nodes := fetchAllSources(cfg)
+	logf("合并后总计 %d 个节点。", len(nodes))
+
+	// ---------- 2. IP 地区校准 ----------
+	tokenFile := filepath.Join(baseDir, cfg.IPCalibrationTokenFile)
+	cacheFile := filepath.Join(baseDir, cfg.IPCalibrationCacheFile)
+	calibrateRegions(cfg, nodes, tokenFile, cacheFile, notifier)
+
+	// ---------- 3. 前置过滤（按序：端口 → 黑名单 → 白名单）----------
+	nodes = preFilter(cfg, nodes)
+	if len(nodes) == 0 {
+		logf("过滤后无任何有效节点，退出。")
+		return
+	}
+
+	// ---------- 4. TCP 连接测试 ----------
+	results := tcpTestAll(cfg, nodes)
+	if len(results) == 0 {
+		logf("没有通过成功率筛选的节点，请检查网络或降低 MIN_SUCCESS_RATE。")
+		return
+	}
+	sortNodeResults(results)
+
+	latencyMap := make(map[string]float64, len(results))
+	for _, r := range results {
+		latencyMap[r.Node] = r.Latency
+	}
+
+	countryNodes := groupByCountry(results)
+	candidates := buildCandidates(cfg, results, countryNodes)
+	if len(candidates) == 0 {
+		logf("没有候选节点，退出。")
+		return
+	}
+
+	// ---------- 5. 可用性 → HTTP → 带宽 三级筛选 ----------
+	candidates, availStacks := availabilityFilterWithRetry(cfg, candidates, notifier)
+	candidates, httpLatencyMap, httpJitterMap := httpServerFilter(cfg, candidates, notifier)
+
+	var bwResults []BandwidthResult
+	for attempt := 1; attempt <= cfg.BandwidthRetryMax; attempt++ {
+		logf("\n[带宽测速] 第 %d 轮测试...", attempt)
+		bwResults = bandwidthFilter(cfg, candidates)
+		if len(bwResults) > 0 {
+			break
+		}
+		if attempt < cfg.BandwidthRetryMax {
+			logf("本轮测速无有效结果，等待 %d 秒后重试...", cfg.BandwidthRetryDelay)
+			sleepSeconds(cfg.BandwidthRetryDelay)
+		}
+	}
+
+	// ---------- 6. 综合排序，产出最终节点 ----------
+	speedMap := make(map[string]float64, len(bwResults))
+	var finalSelected []string
+
+	if len(bwResults) == 0 {
+		logf("\n带宽测速多次重试仍无有效结果，将使用 TCP 筛选结果作为最终节点。")
+		notifier.Send(
+			fmt.Sprintf("带宽测速经 %d 轮尝试后仍无有效结果，已降级使用 TCP 排序节点。", cfg.BandwidthRetryMax),
+			"带宽测速全部失败",
+		)
+		finalSelected = fallbackSelection(cfg, results, countryNodes)
+	} else {
+		for _, r := range bwResults {
+			speedMap[r.Node] = r.Speed
+		}
+		finalSelected = scoreAndSelect(cfg, bwResults, latencyMap, httpLatencyMap, httpJitterMap)
+
+		logf("\n================ 最终优选节点 ================")
+		for i, node := range finalSelected {
+			line := fmt.Sprintf("%d. %s 速度 %.2f Mbps", i+1, node, speedMap[node])
+			if v, ok := httpLatencyMap[node]; ok {
+				line += fmt.Sprintf(" 延迟 %.2f ms", v)
+			}
+			if v, ok := httpJitterMap[node]; ok {
+				line += fmt.Sprintf(" 抖动 %.2f ms", v)
+			}
+			if v, ok := latencyMap[node]; ok {
+				line += fmt.Sprintf(" 延迟 %.2f ms", v*1000)
+			}
+			logf("%s", line)
+		}
+	}
+
+	// ---------- 7. 写出结果 ----------
+	if err := writeIPTxt(cfg, finalSelected, speedMap, latencyMap, httpLatencyMap, httpJitterMap); err != nil {
+		logf("写入 %s 失败: %v", cfg.OutputFile, err)
+		return
+	}
+	logf("\n结果已保存到 %s（共 %d 个节点）", cfg.OutputFile, len(finalSelected))
+
+	// ---------- 8. Cloudflare DNS 更新 ----------
+	ipList := make([]string, 0, len(finalSelected))
+	for _, node := range finalSelected {
+		ip, _, _ := strings.Cut(node, ":")
+		ipList = append(ipList, ip)
+	}
+	batchUpdateCloudflareDNS(cfg, notifier, ipList, availStacks, bwResults, latencyMap, httpLatencyMap, httpJitterMap)
+
+	// ---------- 9. GitHub 同步 ----------
+	syncToGitHub(cfg, notifier)
+}
+
+// printBanner 打印运行参数摘要
+func printBanner(cfg *Config) {
+	mode := fmt.Sprintf("全局最优%d个", cfg.GlobalTopN)
+	if !cfg.UseGlobalMode {
+		mode = fmt.Sprintf("每个国家最优%d个", cfg.PerCountryTopN)
+	}
+	logf("当前模式：%s，每个节点测试 %d 次 TCP 连接", mode, cfg.TCPProbes)
+	logf("最低成功率要求：%.0f%%", cfg.MinSuccessRate*100)
+	logf("IP 可用性二次筛选：%s（仅对候选节点）", enabledText(cfg.TestAvailability))
+	logf("HTTP检测：%s（仅对候选节点）", enabledText(cfg.HTTPTestEnabled))
+	logf("IPv6 客户端 IP 过滤（仅作用于DNS更新环节）：%s", enabledText(cfg.FilterIPv6Availability))
+	logf("DNS黑名单过滤：%s，黑名单国家：%s", enabledText(cfg.FilterBlockedCountriesEnabled), strings.Join(cfg.BlockedCountries, ", "))
+	logf("IP 风险等级过滤：%s（最高允许：%s）", enabledText(cfg.DNSIPRiskFilterEnabled), cfg.DNSIPRiskMaxLevel)
+	logf("带宽测速候选数：%d，测速文件大小：%.1f MB，超时：%ds", cfg.BandwidthCandidat, cfg.BandwidthSizeMB, cfg.BandwidthTimeout)
+	if cfg.FilterCountriesEnabled {
+		logf("前置白名单过滤：启用，仅保留：%s", strings.Join(cfg.AllowedCountries, ", "))
+	}
+}
+
+func enabledText(b bool) string {
+	if b {
+		return "启用"
+	}
+	return "禁用"
+}
+
+func printUsage() {
+	fmt.Printf(`cfnb-go %s — Cloudflare CDN 节点优选工具（Go 版）
+
+用法:
+  cfnb                 读取同目录 config.json 并执行一次完整优选流程
+  cfnb --version       打印版本号
+  cfnb --help          打印本帮助
+
+配置:
+  所有参数位于程序同目录的 config.json，字段与 Python 版完全兼容，
+  另新增 GITHUB_* 字段用于通过 GitHub Contents API 同步 ip.txt。
+
+环境变量:
+  RUN_INTERVAL  由容器 entrypoint 使用，循环运行间隔（秒），0=只运行一次
+  TZ            时区，例如 Asia/Shanghai
+
+输出:
+  ip.txt         优选结果（每行 IP:端口#国家码）
+  ipinfo_cache.txt  IP 地区校准缓存（启用校准时生成）
+`, version)
+}
+
+// fetchAllSources 抓取所有启用的数据源并按 ip:port 去重合并
+func fetchAllSources(cfg *Config) []string {
+	client := newHTTPClient(
+		time.Duration(cfg.FetchConnectTimout)*time.Second,
+		time.Duration(cfg.FetchTimeout)*time.Second,
+		true,
+	)
+
+	var nodes []string
+	seen := map[string]struct{}{}
+	for _, source := range cfg.AdditionalSources {
+		if !source.IsEnabled() || source.URL == "" {
+			continue
+		}
+		for _, node := range fetchAdditionalSource(cfg, client, source.URL) {
+			key, _, _ := strings.Cut(node, "#")
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			nodes = append(nodes, node)
+		}
+	}
+	return nodes
+}
+
+// preFilter 前置过滤：端口 → 黑名单 → 白名单（均在 TCP 测试前执行）
+func preFilter(cfg *Config, nodes []string) []string {
+	if cfg.PreFilterPortEnabled && len(cfg.PreFilterPorts) > 0 {
+		before := len(nodes)
+		allowedPorts := map[string]struct{}{}
+		for _, p := range cfg.PreFilterPorts {
+			allowedPorts[strconv.Itoa(p)] = struct{}{}
+		}
+		filtered := nodes[:0:0]
+		for _, node := range nodes {
+			_, rest, ok := strings.Cut(node, ":")
+			if !ok {
+				continue
+			}
+			port, _, _ := strings.Cut(rest, "#")
+			if _, allowed := allowedPorts[port]; allowed {
+				filtered = append(filtered, node)
+			}
+		}
+		nodes = filtered
+		portsDisplay := make([]string, 0, len(cfg.PreFilterPorts))
+		for _, p := range cfg.PreFilterPorts {
+			portsDisplay = append(portsDisplay, strconv.Itoa(p))
+		}
+		logf("前置端口过滤（仅保留端口 %s）：%d -> %d 个节点", strings.Join(portsDisplay, ", "), before, len(nodes))
+		if len(nodes) == 0 {
+			return nil
+		}
+	}
+
+	if cfg.PreFilterBlockedEnabled && len(cfg.PreFilterBlockedCountries) > 0 {
+		before := len(nodes)
+		blocked := map[string]struct{}{}
+		for _, c := range cfg.PreFilterBlockedCountries {
+			blocked[strings.ToUpper(c)] = struct{}{}
+		}
+		filtered := nodes[:0:0]
+		for _, node := range nodes {
+			tag := nodeTag(node)
+			if _, isBlocked := blocked[strings.ToUpper(strings.Fields(tag)[0])]; !isBlocked {
+				filtered = append(filtered, node)
+			}
+		}
+		nodes = filtered
+		logf("前置黑名单过滤：%d -> %d 个节点（已屏蔽：%s）", before, len(nodes), strings.Join(sortStrings(cfg.PreFilterBlockedCountries), ", "))
+		if len(nodes) == 0 {
+			return nil
+		}
+	}
+
+	if cfg.FilterCountriesEnabled && len(cfg.AllowedCountries) > 0 {
+		before := len(nodes)
+		allowed := map[string]struct{}{}
+		for _, c := range cfg.AllowedCountries {
+			allowed[strings.ToUpper(c)] = struct{}{}
+		}
+		filtered := nodes[:0:0]
+		for _, node := range nodes {
+			if !strings.Contains(node, "#") {
+				continue
+			}
+			if _, ok := allowed[strings.ToUpper(strings.Fields(nodeTag(node))[0])]; ok {
+				filtered = append(filtered, node)
+			}
+		}
+		nodes = filtered
+		allowedDisplay := make([]string, 0, len(allowed))
+		for c := range allowed {
+			allowedDisplay = append(allowedDisplay, c)
+		}
+		logf("\n国家过滤（测试前）：%d -> %d 个节点（允许国家：%s）", before, len(nodes), strings.Join(sortStrings(allowedDisplay), ", "))
+	}
+	return nodes
+}
+
+// nodeTag 取节点 # 后的标签
+func nodeTag(node string) string {
+	idx := strings.LastIndex(node, "#")
+	if idx < 0 {
+		return ""
+	}
+	return node[idx+1:]
+}
+
+// tcpTestAll 并发完成 TCP 测试
+func tcpTestAll(cfg *Config, nodes []string) []*NodeResult {
+	logf("开始 TCP 连接测试（超时 %.1fs，并发 %d）...", cfg.Timeout, cfg.MaxWorkers)
+	pp := newProgressPrinter(cfg.ProgressPrintInterval, "[TCP测试]")
+
+	results, _ := parallelRunProgress(nodes, cfg.MaxWorkers,
+		func(node string) (*NodeResult, bool) {
+			r := testNode(cfg, node)
+			return r, r != nil
+		}, pp, "")
+
+	logf("TCP 测试完成！")
+	return results
+}
+
+// groupByCountry 按国家分组（保持稳定顺序）
+func groupByCountry(results []*NodeResult) map[string][]*NodeResult {
+	grouped := map[string][]*NodeResult{}
+	for _, r := range results {
+		grouped[r.Country] = append(grouped[r.Country], r)
+	}
+	return grouped
+}
+
+// buildCandidates 构建进入测速的候选池
+func buildCandidates(cfg *Config, results []*NodeResult, countryNodes map[string][]*NodeResult) []string {
+	if cfg.UseGlobalMode {
+		limit := cfg.BandwidthCandidat
+		if limit > len(results) {
+			limit = len(results)
+		}
+		candidates := make([]string, 0, limit)
+		for _, r := range results[:limit] {
+			candidates = append(candidates, r.Node)
+		}
+		logf("\nTCP 最优前 %d 个节点进入候选池。", len(candidates))
+		return candidates
+	}
+
+	totalCountries := len(countryNodes)
+	if totalCountries == 0 {
+		return nil
+	}
+	baseLimit := cfg.BandwidthCandidat / totalCountries
+	if baseLimit < 1 {
+		baseLimit = 1
+	}
+
+	var candidates []string
+	for _, country := range sortedCountryKeys(countryNodes) {
+		items := countryNodes[country]
+		sortNodeResults(items)
+		limit := len(items)
+		if limit > baseLimit {
+			limit = baseLimit
+		}
+		for _, r := range items[:limit] {
+			candidates = append(candidates, r.Node)
+		}
+	}
+	logf("\n各国家候选池分配：共 %d 个国家，每国最多 %d 个候选，总计 %d 个节点进入候选池。", totalCountries, baseLimit, len(candidates))
+	return candidates
+}
+
+func sortedCountryKeys(grouped map[string][]*NodeResult) []string {
+	keys := make([]string, 0, len(grouped))
+	for k := range grouped {
+		keys = append(keys, k)
+	}
+	return sortStrings(keys)
+}
+
+// scoredNode 综合评分结果
+type scoredNode struct {
+	Node  string
+	Score float64
+}
+
+// scoreAndSelect 综合加权排序并选出最终节点
+func scoreAndSelect(
+	cfg *Config,
+	bwResults []BandwidthResult,
+	latencyMap, httpLatencyMap, httpJitterMap map[string]float64,
+) []string {
+	scored := make([]scoredNode, 0, len(bwResults))
+	for _, r := range bwResults {
+		tcpLat, ok := latencyMap[r.Node]
+		if !ok {
+			tcpLat = 999.0
+		}
+		httpLat, ok := httpLatencyMap[r.Node]
+		if !ok {
+			httpLat = 999999.0
+		}
+		jitter, ok := httpJitterMap[r.Node]
+		if !ok {
+			jitter = 999999.0
+		}
+
+		penalty := 1.0 +
+			cfg.TCPLatencyWeight*tcpLat +
+			cfg.HTTPLatencyWeight*httpLat/1000.0 +
+			cfg.JitterWeight*jitter/1000.0
+		scored = append(scored, scoredNode{Node: r.Node, Score: cfg.SpeedWeight * r.Speed / penalty})
+	}
+
+	// 得分降序（稳定排序，保持同分时速度降序的相对顺序）
+	for i := 1; i < len(scored); i++ {
+		for j := i; j > 0 && scored[j].Score > scored[j-1].Score; j-- {
+			scored[j], scored[j-1] = scored[j-1], scored[j]
+		}
+	}
+
+	if cfg.UseGlobalMode {
+		limit := cfg.GlobalTopN
+		if limit > len(scored) {
+			limit = len(scored)
+		}
+		out := make([]string, 0, limit)
+		for _, s := range scored[:limit] {
+			out = append(out, s.Node)
+		}
+		return out
+	}
+
+	// 分国家模式：每国取前 N，再按得分整体排序
+	countryScored := map[string][]scoredNode{}
+	for _, s := range scored {
+		country := nodeTag(s.Node)
+		if country == "" {
+			continue
+		}
+		countryScored[country] = append(countryScored[country], s)
+	}
+
+	scoreDict := make(map[string]float64, len(scored))
+	for _, s := range scored {
+		scoreDict[s.Node] = s.Score
+	}
+
+	var selected []string
+	for _, country := range sortedScoredKeys(countryScored) {
+		items := countryScored[country]
+		limit := cfg.PerCountryTopN
+		if limit > len(items) {
+			limit = len(items)
+		}
+		for _, s := range items[:limit] {
+			selected = append(selected, s.Node)
+		}
+	}
+
+	// 按得分降序
+	for i := 1; i < len(selected); i++ {
+		for j := i; j > 0 && scoreDict[selected[j]] > scoreDict[selected[j-1]]; j-- {
+			selected[j], selected[j-1] = selected[j-1], selected[j]
+		}
+	}
+	return selected
+}
+
+func sortedScoredKeys(grouped map[string][]scoredNode) []string {
+	keys := make([]string, 0, len(grouped))
+	for k := range grouped {
+		keys = append(keys, k)
+	}
+	return sortStrings(keys)
+}
+
+// fallbackSelection 带宽测速全部失败时，降级使用 TCP 结果
+func fallbackSelection(cfg *Config, results []*NodeResult, countryNodes map[string][]*NodeResult) []string {
+	var selected []string
+	if cfg.UseGlobalMode {
+		limit := cfg.GlobalTopN
+		if limit > len(results) {
+			limit = len(results)
+		}
+		for _, r := range results[:limit] {
+			selected = append(selected, r.Node)
+		}
+		return selected
+	}
+
+	for _, country := range sortedCountryKeys(countryNodes) {
+		items := countryNodes[country]
+		sortNodeResults(items)
+		limit := cfg.PerCountryTopN
+		if limit > len(items) {
+			limit = len(items)
+		}
+		for _, r := range items[:limit] {
+			selected = append(selected, r.Node)
+		}
+	}
+	return selected
+}
