@@ -246,7 +246,9 @@ docker run -d --name cfnb-go \
 | `BANDWIDTH_CANDIDATES` | `150` | 进入测速的候选节点数 |
 | `MIN_SUCCESS_RATE` | `1.0` | TCP 最低成功率阈值 |
 | `PRE_FILTER_PORTS` | `[443]` | TCP 测试前仅保留的端口 |
-| `PRE_FILTER_BLOCKED_COUNTRIES` | `["CN"]` | 前置黑名单（测试前剔除） |
+| `PRE_FILTER_BLOCKED_COUNTRIES` | `["CN"]` | 前置黑名单（测试前剔除）。默认还会并入 DNS 环节的 `BLOCKED_COUNTRIES`，见下一行 |
+| `PRE_FILTER_USE_DNS_BLOCKLIST` | `true` | 是否把 `BLOCKED_COUNTRIES` 并入前置黑名单。建议保持 `true`，否则名单不一致的国家要走完 TCP/HTTP/带宽三段才被淘汰 |
+| `PRE_BANDWIDTH_IPV6_FILTER_ENABLED` | `true` | 测速前就剔除「仅 IPv6 可达」的节点（IPv4-only 优选）。见下方《为什么默认只优选 IPv4》 |
 | `ALLOWED_COUNTRIES` | `["US"]` | 白名单（需 `FILTER_COUNTRIES_ENABLED: true`） |
 | `HTTP_LATENCY_WEIGHT` / `JITTER_WEIGHT` / `SPEED_WEIGHT` | `3.0` | 综合排序权重 |
 | `CF_ENABLED` / `DNS_RECORD_TYPE` | `true` / `TXT` | Cloudflare DNS 自动更新 |
@@ -275,8 +277,8 @@ docker run -d --name cfnb-go \
 | `zip.cm.edu.kg/all.txt` | URL | 综合大列表（约 1.5 万条），带国家标签 |
 | `countrymerge.pages.dev/all.txt` | URL | 综合列表（约 1.6 千条），带国家标签 |
 | `ipdb.api.030101.xyz?type=bestproxy` | URL | 第三方反代 IP（`type=bestcf` 则为 CF 官方 IP） |
-| `yuanxiawan/cfipv4db` | URL | 韩国 VPS 扫描的高分 IP，更新频繁，**全是 CF 官方 anycast IP** |
-| `cmliu/WorkerVless2sub` | URL | 整理过的优选地址列表，带国家标签 |
+| `yuanxiawan/cfipv4db` | URL（经镜像） | 韩国 VPS 扫描的高分 IP，更新频繁，**全是 CF 官方 anycast IP**。经 `ghproxy.net` 中转，原因见下方《GitHub 源为什么走镜像》 |
+| `cmliu/WorkerVless2sub` | URL（经镜像） | 整理过的优选地址列表，带国家标签。同上，经 `ghproxy.net` 中转 |
 | `cf.090227.xyz` | 域名直填 | 老牌优选域名，三网自适应 |
 | `cmcc.090227.xyz` | 域名直填 | 同上，移动线路专门优化 |
 
@@ -307,6 +309,56 @@ CF 官方 IP 全部通过 HTTP 检测，且 TCP 延迟明显低于第三方反�
 ```
 得分 = (SPEED_WEIGHT × 带宽) / (1 + TCP_LATENCY_WEIGHT × TCP延迟 + HTTP_LATENCY_WEIGHT × HTTP延迟 + JITTER_WEIGHT × HTTP抖动)
 ```
+
+### 为什么默认只优选 IPv4（两个 IPv6 过滤开关的区别）
+
+可用性 API（`AVAILABILITY_CHECK_API`）会返回每个节点的协议栈：`inferred_stack` 为 `ipv4_only` / `ipv6_only` / `dual_stack`，并附带 `supports_ipv4`、`supports_ipv6`。
+
+**「仅 IPv6 可达」（`ipv6_only`）的节点对纯 IPv4 客户端不可用**——家用宽带、多数 VPS、大量落地机都是 IPv4-only 环境。而这类节点的**测速成绩往往很好看**（多为就近 IDC，成绩来自 IPv6 通道），于是很容易整批霸占 `ip.txt` 的前几名，形成「看着最优、拿去不能用」的假优。
+
+程序提供两个开关，分工不同：
+
+| 开关 | 生效位置 | 作用 |
+| :--- | :--- | :--- |
+| `PRE_BANDWIDTH_IPV6_FILTER_ENABLED`（默认 `true`） | 可用性检测之后、**HTTP 与带宽测速之前** | 直接剔除 `ipv6_only` 节点 |
+| `FILTER_IPV6_AVAILABILITY`（默认 `true`） | **DNS 写入之前** | 兜底，再拦一次；前者生效后此处计数通常为 0 |
+
+为什么要把过滤提前到测速之前：**带宽测速是整轮最耗时的一段**（实测约占总耗时一半），而 `ipv6_only` 节点无论如何都进不了最终 DNS 名单——晚过滤等于把一半机时花在注定被丢弃的节点上。提前之后另有两个附带好处：`ip.txt` 只留真正可用的节点，且 `ip.txt` 与写入 DNS 的名单会收敛，不再出现两套互不相干的结果。
+
+实测（2026-10，某轮真实运行日志）：
+
+- `ip.txt` 最终入选 10 个**全是 `#HK`**，速度 14.13 ~ 18.50 Mbps
+- 同时写入 Cloudflare DNS 的 10 个却是 SG / JP / US / 无标签，速度 4.23 ~ 11.03 Mbps，**两边零重合**
+- 逐个反查可用性 API：那 10 个 HK 节点里 **9 个是 `ipv6_only`**，被 DNS 环节整批剔除 → 带宽测速选出的最优批次全部作废
+
+> ⚠️ 若你的客户端**确实有 IPv6**，或这些节点要用于 IPv6 场景，把 `PRE_BANDWIDTH_IPV6_FILTER_ENABLED` 设为 `false` 即恢复原行为。
+
+> ℹ️ 该过滤依赖可用性检测返回的协议栈信息。若 `TEST_AVAILABILITY` 为 `false`、或该轮可用性检测整体失败，拿不到协议栈时这一步会**自动跳过并在日志提示，不会误杀节点**。
+
+### 两道国家黑名单为什么要对齐
+
+`PRE_FILTER_BLOCKED_COUNTRIES`（TCP 测试前）与 `BLOCKED_COUNTRIES`（DNS 写入前）是两道独立的闸，都只认 `#国家` 标签。默认前者只有 `CN`、后者有 28 国，**名单一旦不一致，只会被后一道闸拦下的国家，其节点仍要走完 TCP/HTTP/带宽三段**（其中带宽测速占整轮耗时一半）才在最后被淘汰——纯属白测。
+
+`PRE_FILTER_USE_DNS_BLOCKLIST`（默认 `true`）让前置黑名单自动并入 DNS 黑名单，从此只需维护 `BLOCKED_COUNTRIES` 一份名单。设 `false` 则回到两份名单各自独立的老行为。
+
+前置黑名单**不误杀无标签节点**：拿不到落地国家就宁可放过（与 DNS 阶段口径一致）。因此 DNS 阶段仍可能拦下少量无标签节点，属预期行为。
+
+### GitHub 源为什么走镜像
+
+`raw.githubusercontent.com` 在国内网络下**偶发连接重置**（容器内尤为常见）：
+
+```
+请求或解析失败 (…/high_score_ips.txt): read tcp 172.30.0.2:33938->185.199.109.133:443: read: connection reset by peer
+已尝试 3 次，放弃该数据源。
+```
+
+实测出现过**三次重试全部失败**（同一时刻宿主 `curl` 同一 URL 却是 `200 / 0.5s`），所以不能只靠重试兜底。默认把这两个 GitHub 源改为经 `ghproxy.net` 中转：
+
+```
+https://ghproxy.net/https://raw.githubusercontent.com/yuanxiawan/cfipv4db/refs/heads/main/high_score_ips.txt
+```
+
+**不用 `cdn.jsdelivr.net` 的原因**：它按分支缓存，实测返回的是**明显过期的旧榜单**（与原始源内容完全对不上）；而 `ghproxy.net` 返回的内容与原始源**逐字节一致**。镜像若失效，「筛子」汇总表里该源的「抓取」列会变成 0，一眼可见。
 
 ### GitHub 自动同步（Go 版改用 API）
 

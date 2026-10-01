@@ -138,12 +138,15 @@ func batchUpdateCloudflareDNS(
 	var (
 		dnsContentList []string
 		dnsNodeList    []string
-		filteredByPort int
-		filteredByIPv6 int
-		filteredByCtry int
-		filteredByRisk int
 		riskFallbackIP []string
 		riskFallbackNd []string
+
+		// 各过滤原因命中的节点明细：日志里逐类列出，便于自证
+		// 「哪些 IP 被哪条规则拦下」，而不是只给一个汇总数
+		portDropped []string
+		ipv6Dropped []string
+		ctryDropped []string
+		riskDropped []string
 	)
 
 	// ---------- 风险等级批量查询 ----------
@@ -195,14 +198,14 @@ func batchUpdateCloudflareDNS(
 
 			// 端口过滤（A 记录要求 443）
 			if recordType == "A" && port != "443" {
-				filteredByPort++
+				portDropped = append(portDropped, nodeStr)
 				continue
 			}
 
 			// IPv6 落地过滤
 			if cfg.FilterIPv6Availability {
 				if stacks[nodeStr] == "ipv6_only" {
-					filteredByIPv6++
+					ipv6Dropped = append(ipv6Dropped, nodeStr)
 					continue
 				}
 			}
@@ -212,7 +215,7 @@ func batchUpdateCloudflareDNS(
 				tag := nodeStr[strings.LastIndex(nodeStr, "#")+1:]
 				country := strings.ToUpper(firstField(tag))
 				if _, blocked := blockedSet[country]; blocked {
-					filteredByCtry++
+					ctryDropped = append(ctryDropped, nodeStr)
 					continue
 				}
 			}
@@ -223,7 +226,7 @@ func batchUpdateCloudflareDNS(
 
 				level := orDefault(riskMap[ip], "未知")
 				if level == "未知" || riskLevelOrder[level] > riskLevelOrder[cfg.DNSIPRiskMaxLevel] {
-					filteredByRisk++
+					riskDropped = append(riskDropped, nodeStr)
 					continue
 				}
 			}
@@ -241,7 +244,7 @@ func batchUpdateCloudflareDNS(
 		}
 
 		// 风险过滤全部失败 → 回退到未做风险过滤的列表
-		if cfg.DNSIPRiskFilterEnabled && len(dnsContentList) == 0 && filteredByRisk > 0 {
+		if cfg.DNSIPRiskFilterEnabled && len(dnsContentList) == 0 && len(riskDropped) > 0 {
 			notifier.Send(
 				"风险等级检测全部失败：所有候选节点均因风险等级过高或 API 查询失败被过滤，已回退到无风险等级过滤的候选列表。",
 				"风险等级检测全部失败",
@@ -261,17 +264,17 @@ func batchUpdateCloudflareDNS(
 		}
 
 		var parts []string
-		if filteredByPort > 0 {
-			parts = append(parts, fmt.Sprintf("非443端口过滤(%d个)", filteredByPort))
+		if n := len(portDropped); n > 0 {
+			parts = append(parts, fmt.Sprintf("非443端口过滤(%d个)", n))
 		}
 		if cfg.FilterIPv6Availability {
-			parts = append(parts, fmt.Sprintf("IPv6落地过滤(%d个)", filteredByIPv6))
+			parts = append(parts, fmt.Sprintf("IPv6落地过滤(%d个)", len(ipv6Dropped)))
 		}
 		if cfg.FilterBlockedCountriesEnabled {
-			parts = append(parts, fmt.Sprintf("DNS黑名单过滤(%d个)", filteredByCtry))
+			parts = append(parts, fmt.Sprintf("DNS黑名单过滤(%d个)", len(ctryDropped)))
 		}
-		if cfg.DNSIPRiskFilterEnabled && filteredByRisk > 0 {
-			parts = append(parts, fmt.Sprintf("风险等级过滤(%d个)", filteredByRisk))
+		if cfg.DNSIPRiskFilterEnabled && len(riskDropped) > 0 {
+			parts = append(parts, fmt.Sprintf("风险等级过滤(%d个)", len(riskDropped)))
 		}
 		filterStr := "无过滤"
 		if len(parts) > 0 {
@@ -282,6 +285,18 @@ func batchUpdateCloudflareDNS(
 			unit = "IP:端口"
 		}
 		logf("从 %d 个测速节点中筛选出 %d 个%s 用于 DNS 更新（%s）。", len(bwResults), len(dnsContentList), unit, filterStr)
+		// 逐类列出被拦下的具体节点：只有汇总数时无法判断「是谁、被哪条规则
+		// 拦下」，排查 ip.txt 与 DNS 名单不一致时只能事后手工反查 API
+		logFilterDetail("非443端口", portDropped)
+		if cfg.FilterIPv6Availability {
+			logFilterDetail("IPv6 落地", ipv6Dropped)
+		}
+		if cfg.FilterBlockedCountriesEnabled {
+			logFilterDetail("国家黑名单", ctryDropped)
+		}
+		if cfg.DNSIPRiskFilterEnabled {
+			logFilterDetail("风险等级", riskDropped)
+		}
 	}
 
 	// ---------- 无候选时降级 ----------
@@ -333,14 +348,16 @@ func batchUpdateCloudflareDNS(
 			display = node
 		}
 		line := fmt.Sprintf("%d. %s 速度 %.2f Mbps", i+1, display, speedMap[node])
+		// 三个延迟指标必须带标签区分：HTTP 与 TCP 的量级相差很大，
+		// 都写成「延迟」会让人误读（与「最终优选」列表的图标口径保持一致）
 		if v, ok := httpLatencyMap[node]; ok {
-			line += fmt.Sprintf(" 延迟 %.2f ms", v)
+			line += fmt.Sprintf("  🌐 HTTP %.2f ms", v)
 		}
 		if v, ok := httpJitterMap[node]; ok {
-			line += fmt.Sprintf(" 抖动 %.2f ms", v)
+			line += fmt.Sprintf("  📉 抖动 %.2f ms", v)
 		}
 		if v, ok := latencyMap[node]; ok {
-			line += fmt.Sprintf(" 延迟 %.2f ms", v*1000)
+			line += fmt.Sprintf("  ⚡ TCP %.2f ms", v*1000)
 		}
 		logf("%s", line)
 	}
@@ -373,6 +390,26 @@ func batchUpdateCloudflareDNS(
 	}
 	// 全部重试失败：没有任何记录被写入，返回 nil 以免统计误报
 	return nil
+}
+
+// filterDetailLimit 每类过滤最多列出多少条节点明细
+const filterDetailLimit = 5
+
+// logFilterDetail 打印某一类过滤命中的节点明细（最多前 N 条）。
+// 只有汇总数时无法定位「哪些 IP 被哪条规则拦下」——实测排查一轮
+// 「ip.txt 的 Top10 与写入 DNS 的 10 个零重合」的问题时，正因为缺这类
+// 明细，只能事后手工把 IP 逐个反查可用性 API 才找到原因。
+func logFilterDetail(reason string, nodes []string) {
+	if len(nodes) == 0 {
+		return
+	}
+	head := nodes
+	suffix := ""
+	if len(nodes) > filterDetailLimit {
+		head = nodes[:filterDetailLimit]
+		suffix = fmt.Sprintf(" …（另有 %d 个）", len(nodes)-filterDetailLimit)
+	}
+	logf("   ↳ %s 拦下 %d 个：%s%s", reason, len(nodes), strings.Join(head, ", "), suffix)
 }
 
 // submitDNSRecords 单次原子批量更新（删除全部旧记录 + 创建新记录）

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -27,9 +28,15 @@ func nodeKeyOf(node string) string {
 	return key
 }
 
+// githubRawInPath 匹配被镜像站改写进 path 的 GitHub raw 地址。
+// 形如 https://ghproxy.net/https://raw.githubusercontent.com/owner/repo/refs/...，
+// url.Parse 之后 Host 是镜像域名、真正的 owner/repo 留在 Path 里。
+var githubRawInPath = regexp.MustCompile(`raw\.githubusercontent\.com/([^/]+)/([^/]+)/`)
+
 // sourceLabel 源的短显示名（日志与汇总表用，避免整条 URL 撑爆行宽）：
 //   - 域名 / 裸 IP 直填源：原名即好标签（cf.090227.xyz）
 //   - raw.githubusercontent.com / github.com：取 owner/repo
+//   - 镜像站中转的 GitHub raw：同样还原成 owner/repo（否则多个镜像源会挤成同一列）
 //   - 其余 URL：取主机名
 func sourceLabel(raw string) string {
 	s := strings.TrimSpace(raw)
@@ -43,6 +50,9 @@ func sourceLabel(raw string) string {
 		if len(seg) >= 2 {
 			return seg[0] + "/" + seg[1]
 		}
+	}
+	if m := githubRawInPath.FindStringSubmatch(u.Path); len(m) == 3 {
+		return m[1] + "/" + m[2]
 	}
 	return host
 }
@@ -159,6 +169,7 @@ var stageIcons = map[string]string{
 	"TCP通过":  "🔌",
 	"候选池":    "🎯",
 	"可用通过":   "🩺",
+	"IPv6过滤": "🛡",
 	"HTTP通过": "🌐",
 	"带宽通过":   "🚀",
 	"最终入选":   "🏆",

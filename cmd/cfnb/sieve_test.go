@@ -56,6 +56,12 @@ func TestSourceLabel(t *testing.T) {
 		// GitHub raw：取 owner/repo
 		{"https://raw.githubusercontent.com/yuanxiawan/cfipv4db/main/high_score_ips.txt", "yuanxiawan/cfipv4db"},
 		{"https://github.com/cmliu/WorkerVless2sub/raw/main/addressesapi.txt", "cmliu/WorkerVless2sub"},
+		// GitHub raw 镜像站：owner/repo 被改写进 path，仍应还原成 owner/repo，
+		// 否则两个镜像源会退化到同一个「主机名」标签而挤成一列
+		{"https://ghproxy.net/https://raw.githubusercontent.com/yuanxiawan/cfipv4db/refs/heads/main/high_score_ips.txt", "yuanxiawan/cfipv4db"},
+		{"https://ghproxy.net/https://raw.githubusercontent.com/cmliu/WorkerVless2sub/refs/heads/main/addressesapi.txt", "cmliu/WorkerVless2sub"},
+		// 镜像站但路径里没有 GitHub raw 地址 → 回退到主机名
+		{"https://mirror.example.com/a/b.txt", "mirror.example.com"},
 	}
 	for _, c := range cases {
 		if got := sourceLabel(c.in); got != c.want {

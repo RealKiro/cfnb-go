@@ -113,9 +113,19 @@ func run(cfg *Config, baseDir string) {
 		return
 	}
 
-	// ---------- 5. 可用性 → HTTP → 带宽 三级筛选 ----------
+	// ---------- 5. 可用性 → IPv6 落地 → HTTP → 带宽 四级筛选 ----------
 	candidates, availStacks := availabilityFilterWithRetry(cfg, candidates, notifier)
 	sieve.recordNodes("可用通过", candidates)
+
+	candidates = preBandwidthIPv6Filter(cfg, candidates, availStacks)
+	if cfg.PreBandwidthIPv6FilterEnabled {
+		sieve.recordNodes("IPv6过滤", candidates)
+	}
+	if len(candidates) == 0 {
+		logf("❌ IPv6 落地过滤后已无剩余节点。如需保留仅 IPv6 可达的节点，把 PRE_BANDWIDTH_IPV6_FILTER_ENABLED 设为 false。")
+		return
+	}
+
 	candidates, httpLatencyMap, httpJitterMap := httpServerFilter(cfg, candidates, notifier)
 	sieve.recordNodes("HTTP通过", candidates)
 
@@ -216,8 +226,16 @@ func printBanner(cfg *Config) {
 	logf("📉 最低成功率要求：%.0f%%", cfg.MinSuccessRate*100)
 	logf("🩺 IP 可用性二次筛选：%s（仅对候选节点）", enabledText(cfg.TestAvailability))
 	logf("🌐 HTTP检测：%s（仅对候选节点）", enabledText(cfg.HTTPTestEnabled))
-	logf("🛡️  IPv6 客户端 IP 过滤（仅作用于DNS更新环节）：%s", enabledText(cfg.FilterIPv6Availability))
+	logf("🛡️  IPv6 落地过滤：测速前 %s ｜ DNS 写入前 %s（剔除仅 IPv6 可达的节点）",
+		enabledText(cfg.PreBandwidthIPv6FilterEnabled), enabledText(cfg.FilterIPv6Availability))
 	logf("🚫 DNS黑名单过滤：%s，黑名单国家：%s", enabledText(cfg.FilterBlockedCountriesEnabled), strings.Join(cfg.BlockedCountries, ", "))
+	if cfg.PreFilterBlockedEnabled {
+		src := "仅 PRE_FILTER_BLOCKED_COUNTRIES"
+		if cfg.PreFilterUseDNSBlocklist {
+			src = "已并入 DNS 黑名单"
+		}
+		logf("🚧 前置黑名单过滤：启用，共 %d 国（%s）", len(preFilterBlockedCountries(cfg)), src)
+	}
 	logf("☣️  IP 风险等级过滤：%s（最高允许：%s）", enabledText(cfg.DNSIPRiskFilterEnabled), cfg.DNSIPRiskMaxLevel)
 	logf("🚀 带宽测速候选数：%d，测速文件大小：%.1f MB，超时：%ds", cfg.BandwidthCandidat, cfg.BandwidthSizeMB, cfg.BandwidthTimeout)
 	if cfg.FilterCountriesEnabled {
@@ -318,11 +336,11 @@ func preFilter(cfg *Config, nodes []string) []string {
 		}
 	}
 
-	if cfg.PreFilterBlockedEnabled && len(cfg.PreFilterBlockedCountries) > 0 {
+	if blockedCountries := preFilterBlockedCountries(cfg); cfg.PreFilterBlockedEnabled && len(blockedCountries) > 0 {
 		before := len(nodes)
 		blocked := map[string]struct{}{}
-		for _, c := range cfg.PreFilterBlockedCountries {
-			blocked[strings.ToUpper(c)] = struct{}{}
+		for _, c := range blockedCountries {
+			blocked[c] = struct{}{}
 		}
 		filtered := nodes[:0:0]
 		for _, node := range nodes {
@@ -333,7 +351,7 @@ func preFilter(cfg *Config, nodes []string) []string {
 			}
 		}
 		nodes = filtered
-		logf("🚧 前置黑名单过滤：%d -> %d 个节点（已屏蔽：%s）", before, len(nodes), strings.Join(sortStrings(cfg.PreFilterBlockedCountries), ", "))
+		logf("🚧 前置黑名单过滤：%d -> %d 个节点（已屏蔽：%s）", before, len(nodes), strings.Join(blockedCountries, ", "))
 		if len(nodes) == 0 {
 			return nil
 		}
@@ -362,6 +380,69 @@ func preFilter(cfg *Config, nodes []string) []string {
 		logf("\n🚧 国家过滤（测试前）：%d -> %d 个节点（允许国家：%s）", before, len(nodes), strings.Join(sortStrings(allowedDisplay), ", "))
 	}
 	return nodes
+}
+
+// preFilterBlockedCountries 返回前置黑名单实际生效的国家（已去重、排序）。
+//
+// PRE_FILTER_USE_DNS_BLOCKLIST 开启时并入 DNS 环节的 BLOCKED_COUNTRIES：
+// 两道闸名单若不一致，只会被 DNS 拦下的国家，其节点仍要走完 TCP/HTTP/带宽
+// 三段才在后段被淘汰——实测 HK 节点就这样白跑了一整轮（而带宽测速占整轮
+// 耗时的一半）。默认对齐以消除这种浪费。
+func preFilterBlockedCountries(cfg *Config) []string {
+	if !cfg.PreFilterUseDNSBlocklist {
+		return normalizeCountries(cfg.PreFilterBlockedCountries)
+	}
+	merged := make([]string, 0, len(cfg.PreFilterBlockedCountries)+len(cfg.BlockedCountries))
+	merged = append(merged, cfg.PreFilterBlockedCountries...)
+	merged = append(merged, cfg.BlockedCountries...)
+	return normalizeCountries(merged)
+}
+
+// normalizeCountries 国家码规整：去空白、转大写、去重、排序
+func normalizeCountries(items []string) []string {
+	set := map[string]struct{}{}
+	for _, c := range items {
+		if c = strings.ToUpper(strings.TrimSpace(c)); c != "" {
+			set[c] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for c := range set {
+		out = append(out, c)
+	}
+	return sortStrings(out)
+}
+
+// preBandwidthIPv6Filter 在 HTTP 检测与带宽测速之前剔除「仅 IPv6 可达」的节点。
+//
+// 为什么放在这里而不是只留在 DNS 环节：带宽测速是整轮最耗时的一段（实测约
+// 占一半），而 ipv6_only 节点在 DNS 写入前必定被剔除——晚过滤等于白测。
+// 提前过滤后 ip.txt 与写入 DNS 的名单也会收敛，不再出现「两套互不相干的
+// 结果」（含 9/10 为 ipv6_only 的 HK 节点那种情形）。
+//
+// 数据来自可用性检测返回的 inferred_stack。未开启可用性检测、或该轮可用性
+// 检测整体失败时拿不到协议栈信息，此处自然退化为空操作（不会误杀）。
+func preBandwidthIPv6Filter(cfg *Config, candidates []string, stacks map[string]string) []string {
+	if !cfg.PreBandwidthIPv6FilterEnabled || len(candidates) == 0 {
+		return candidates
+	}
+	if len(stacks) == 0 {
+		logf("ℹ️  未取得节点协议栈信息（可用性检测未启用或本轮失败），本轮跳过 IPv6 落地过滤。")
+		return candidates
+	}
+
+	filtered := make([]string, 0, len(candidates))
+	dropped := 0
+	for _, node := range candidates {
+		if stacks[node] == "ipv6_only" {
+			dropped++
+			continue
+		}
+		filtered = append(filtered, node)
+	}
+	logf("🛡️  IPv6 落地过滤（测速前）：%d -> %d 个节点（剔除仅 IPv6 可达 %d 个）",
+		len(candidates), len(filtered), dropped)
+	return filtered
 }
 
 // nodeTag 取节点 # 后的标签

@@ -40,8 +40,14 @@ type Config struct {
 	AllowedCountries          []string `json:"ALLOWED_COUNTRIES"`
 	PreFilterBlockedEnabled   bool     `json:"PRE_FILTER_BLOCKED_ENABLED"`
 	PreFilterBlockedCountries []string `json:"PRE_FILTER_BLOCKED_COUNTRIES"`
+	PreFilterUseDNSBlocklist  bool     `json:"PRE_FILTER_USE_DNS_BLOCKLIST"`
 	PreFilterPortEnabled      bool     `json:"PRE_FILTER_PORT_ENABLED"`
 	PreFilterPorts            []int    `json:"PRE_FILTER_PORTS"`
+
+	// ---------- 测速前 IPv6 落地过滤 ----------
+	// 开启后在可用性检测之后、HTTP 与带宽测速之前剔除 inferred_stack=ipv6_only
+	// 的节点：既省下最耗时的带宽测速，也让 ip.txt 只留 IPv4 可用节点。
+	PreBandwidthIPv6FilterEnabled bool `json:"PRE_BANDWIDTH_IPV6_FILTER_ENABLED"`
 
 	// ---------- 微信通知 ----------
 	EnableWxPusher      bool     `json:"ENABLE_WXPUSHER"`
@@ -182,8 +188,11 @@ func defaultConfig() Config {
 		AllowedCountries:          []string{"US"},
 		PreFilterBlockedEnabled:   true,
 		PreFilterBlockedCountries: []string{"CN"},
+		PreFilterUseDNSBlocklist:  true,
 		PreFilterPortEnabled:      true,
 		PreFilterPorts:            []int{443},
+
+		PreBandwidthIPv6FilterEnabled: true,
 
 		EnableWxPusher:      true,
 		WxPusherAppToken:    "your_app_token_here",
@@ -206,9 +215,12 @@ func defaultConfig() Config {
 			{URL: "https://zip.cm.edu.kg/all.txt"},
 			{URL: "https://countrymerge.pages.dev/all.txt"},
 			{URL: "https://ipdb.api.030101.xyz/?type=bestproxy&country=true"},
-			// GitHub 社区维护的高频更新源
-			{URL: "https://raw.githubusercontent.com/yuanxiawan/cfipv4db/refs/heads/main/high_score_ips.txt"},
-			{URL: "https://raw.githubusercontent.com/cmliu/WorkerVless2sub/refs/heads/main/addressesapi.txt"},
+			// GitHub 社区维护的高频更新源。
+			// 经 ghproxy.net 中转：raw.githubusercontent.com 在国内（尤其容器内）
+			// 常被 RST，三次重试也可能全废；实测该镜像返回内容与原始源逐字节一致。
+			// 注意别用 cdn.jsdelivr.net——它按分支缓存，会拿到明显过期的旧榜单。
+			{URL: "https://ghproxy.net/https://raw.githubusercontent.com/yuanxiawan/cfipv4db/refs/heads/main/high_score_ips.txt"},
+			{URL: "https://ghproxy.net/https://raw.githubusercontent.com/cmliu/WorkerVless2sub/refs/heads/main/addressesapi.txt"},
 			// 社区优选域名：非 http(s) 写法 → 按域名做 DNS 解析，取全部 A 记录
 			{URL: "cf.090227.xyz"},
 			{URL: "cmcc.090227.xyz"},

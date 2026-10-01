@@ -41,7 +41,13 @@
     "_comment_PRE_FILTER_BLOCKED_ENABLED": "前置黑名单开关（true=在TCP测试前剔除下方国家）",
 
     "PRE_FILTER_BLOCKED_COUNTRIES": ["CN"],
-    "_comment_PRE_FILTER_BLOCKED_COUNTRIES": "前置屏蔽的国家代码列表，不受白名单影响",
+    "_comment_PRE_FILTER_BLOCKED_COUNTRIES": "前置屏蔽的国家代码列表，不受白名单影响。默认还会并入下方 BLOCKED_COUNTRIES（见 PRE_FILTER_USE_DNS_BLOCKLIST）",
+
+    "PRE_FILTER_USE_DNS_BLOCKLIST": true,
+    "_comment_PRE_FILTER_USE_DNS_BLOCKLIST": "是否把 DNS 环节的 BLOCKED_COUNTRIES 并入前置黑名单。建议开启：两道闸名单不一致时，只会被 DNS 拦下的国家其节点仍要走完 TCP/HTTP/带宽三段才被淘汰（带宽测速约占整轮耗时一半），纯属白测。实测 HK 节点就因此白跑过一整轮",
+
+    "PRE_BANDWIDTH_IPV6_FILTER_ENABLED": true,
+    "_comment_PRE_BANDWIDTH_IPV6_FILTER_ENABLED": "是否在 HTTP 检测与带宽测速【之前】就剔除「仅 IPv6 可达」的节点（依据可用性 API 的 inferred_stack=ipv6_only）。开启后：① 省下最耗时的带宽测速；② ip.txt 只留 IPv4 可用节点，不再出现「排名最前的 10 个全是 ipv6_only」这种假优；③ ip.txt 与写入 DNS 的名单收敛。若你的场景是纯 IPv4 客户端（家用宽带、多数 VPS），保持 true；若确实要用仅 IPv6 可达的节点，设为 false",
 
     "PRE_FILTER_PORT_ENABLED": true,
     "_comment_PRE_FILTER_PORT_ENABLED": "是否在 TCP 测试前过滤端口（仅保留下方指定的端口）",
@@ -95,11 +101,11 @@
             "enabled": true
         },
         {
-            "url": "https://raw.githubusercontent.com/yuanxiawan/cfipv4db/refs/heads/main/high_score_ips.txt",
+            "url": "https://ghproxy.net/https://raw.githubusercontent.com/yuanxiawan/cfipv4db/refs/heads/main/high_score_ips.txt",
             "enabled": true
         },
         {
-            "url": "https://raw.githubusercontent.com/cmliu/WorkerVless2sub/refs/heads/main/addressesapi.txt",
+            "url": "https://ghproxy.net/https://raw.githubusercontent.com/cmliu/WorkerVless2sub/refs/heads/main/addressesapi.txt",
             "enabled": true
         },
         {
@@ -222,7 +228,7 @@
     "_comment_HTTP_JITTER_SAMPLES": "HTTP延迟抖动测试次数（至少3次，建议3~5次，越大越准但越慢）",
 
     "FILTER_IPV6_AVAILABILITY": true,
-    "_comment_FILTER_IPV6_AVAILABILITY": "【仅DNS】是否过滤落地为 IPv6 的节点",
+    "_comment_FILTER_IPV6_AVAILABILITY": "【DNS 写入前】是否过滤落地为 IPv6 的节点。与上方 PRE_BANDWIDTH_IPV6_FILTER_ENABLED 的分工：那个在测速前就把 ipv6_only 剔除，这个是 DNS 写入前的兜底；前者开启后此处计数通常为 0",
 
     "FILTER_BLOCKED_COUNTRIES_ENABLED": true,
     "_comment_FILTER_BLOCKED_COUNTRIES_ENABLED": "【仅DNS】黑名单开关（true=屏蔽下方 BLOCKED_COUNTRIES 中的国家）",
