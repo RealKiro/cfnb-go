@@ -6,6 +6,12 @@ FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH
 
+# 版本号由 CI 通过 build-args 注入（见 .github/workflows/ci.yml）。
+# 不能省：镜像由 CI 构建，但二进制若不带版本号，容器里 `--version` 只会显示
+# 源码中的默认值（1.0.0），排查时无法确认容器跑的到底是哪一版——实测踩过这个坑。
+# 缺省值 dev 仅用于手工 build。
+ARG VERSION=dev
+
 WORKDIR /src
 
 # 先复制依赖清单，最大化利用构建缓存（本项目零第三方依赖）
@@ -15,7 +21,7 @@ RUN go mod download
 COPY . .
 
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags="-s -w" -o /out/cfnb ./cmd/cfnb
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/cfnb ./cmd/cfnb
 
 # ============ 运行阶段：极简 Alpine（仅 ca-certificates + tzdata + 静态二进制）============
 FROM alpine:3.20
