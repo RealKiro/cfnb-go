@@ -18,8 +18,10 @@ cfnb.exe
 cmd/cfnb/cfnb
 cmd/cfnb/cfnb.exe
 ip.txt
+deploy/data/ip.txt      # 运行结果，不进构建上下文（避免每次运行都让 COPY . . 层失效）
 *.log
 ipinfo_cache.txt
 .env
 deploy/.env
 .run.lock
+# 注意：deploy/data/config.json 需保留——Dockerfile 要把它 COPY 进镜像作为默认配置

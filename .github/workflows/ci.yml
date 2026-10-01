@@ -47,7 +47,7 @@ jobs:
 
       - name: 二进制冒烟测试（版本与帮助输出）
         run: |
-          mkdir -p /tmp/smoke && cp configs/config.json /tmp/smoke/ && cp /tmp/cfnb-amd64 /tmp/smoke/cfnb
+          mkdir -p /tmp/smoke && cp deploy/data/config.json /tmp/smoke/ && cp /tmp/cfnb-amd64 /tmp/smoke/cfnb
           cd /tmp/smoke
           ./cfnb --version
           ./cfnb --help | head -5
@@ -55,10 +55,17 @@ jobs:
       - name: 校验 compose 可解析（含变量默认值插值）
         run: |
           set -eu
-          touch ip.txt
           assert_contains() {
             if grep -q -- "$1" "$2"; then echo "  OK   $1"; else echo "  FAIL 期望包含: $1"; exit 1; fi
           }
+
+          echo "=== 断言运行时数据统一走 ./data/ 单点相对路径 ==="
+          assert_contains "source: ./data/config.json" deploy/docker-compose.yml
+          assert_contains "source: ./data/ip.txt" deploy/docker-compose.yml
+          if grep -qE "^[[:space:]]+source: \.\." deploy/docker-compose.yml; then
+            echo "  FAIL 挂载源不应再出现 ../（已收口到 compose 同目录的 data/）"; exit 1
+          fi
+          echo "  OK   挂载源无 ../"
 
           echo "=== 默认（不设任何变量）==="
           docker compose -f deploy/docker-compose.yml config > /tmp/cfg-default.yml
@@ -82,6 +89,9 @@ jobs:
           echo "  OK   create_host_path: false × $COUNT"
           assert_contains "target: /app/ip.txt" /tmp/cfg-default.yml
           assert_contains "target: /app/config.json" /tmp/cfg-default.yml
+          # 渲染后的 source 已被 compose 归一化（绝对路径），只断言末尾路径片段以保持兼容
+          assert_contains "data/ip.txt" /tmp/cfg-default.yml
+          assert_contains "data/config.json" /tmp/cfg-default.yml
 
           echo "=== 覆盖变量 ==="
           CFNB_IMAGE=ghcr.io/example/cfnb-go:v9 CFNB_PULL_POLICY=never \
@@ -107,8 +117,11 @@ jobs:
             echo
             echo '**挂载（长语法，禁止自动建目录）**'
             echo '```yaml'
-            grep -E "target:|create_host_path:" /tmp/cfg-default.yml || true
+            grep -E "source:|target:|create_host_path:" /tmp/cfg-default.yml || true
             echo '```'
+            echo
+            echo '宿主路径收口在 `deploy/data/`（compose 中写作单点相对路径 `./data/...`），'
+            echo '`config.json` 与 `ip.txt` 均随仓库分发，克隆后 `docker compose up -d` 即可运行。'
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ============ 阶段二：多架构构建并推送 GHCR（PR 时跳过）============

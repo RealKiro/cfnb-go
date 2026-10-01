@@ -89,7 +89,7 @@ jobs:
 
           \`\`\`bash
           tar -xzf cfnb-${{ steps.tag.outputs.version }}-linux-amd64.tar.gz
-          cp configs/config.json .        # 程序读取二进制同目录的 config.json
+          cp deploy/data/config.json .    # 程序读取二进制同目录的 config.json
           ./cfnb --version                # 应输出 cfnb-go ${{ steps.tag.outputs.version }}
           ./cfnb                          # 执行一次完整优选流程
           \`\`\`

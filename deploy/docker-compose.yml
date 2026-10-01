@@ -1,11 +1,11 @@
 # docker-compose.yml
 # 位置：deploy/ 目录；镜像一律从 GHCR 拉取，不支持本地构建
 #
-# 使用前准备：
-#   1. configs/config.json 仓库自带，改好令牌即可
-#   2. ip.txt 需先创建空文件（见下方说明）：touch ip.txt
+# 运行时数据都在同目录的 data/ 下（路径只用一个点，base 是本文件所在目录）：
+#   data/config.json  仓库自带模板，改好令牌即可
+#   data/ip.txt       仓库自带空白文件，程序运行后写入优选结果
 #
-# 为什么 ip.txt 必须先存在？
+# 为什么必须显式设置 create_host_path: false？
 #   Docker 短语法 bind mount 在宿主路径不存在时「总是创建为目录」，
 #   于是容器内 /app/ip.txt 会变成目录，程序写入时报 is a directory，
 #   并跳过 Cloudflare DNS 更新与 GitHub 同步。
@@ -16,15 +16,15 @@
 #   CFNB_IMAGE        默认 ghcr.io/realkiro/cfnb-go:latest（官方镜像，开箱即用）
 #   CFNB_PULL_POLICY  默认 missing（本地无缓存时才拉取）
 #
-#   拉取官方镜像（默认，零配置）：docker compose up -d
-#   用自己 fork 的镜像：          CFNB_IMAGE=ghcr.io/<你的用户名>/cfnb-go:latest
+# 使用（在 deploy/ 目录下执行）：
+#   docker compose up -d            拉取官方镜像并启动
+#   docker compose logs -f          查看日志
+#   用自己 fork 的镜像：CFNB_IMAGE=ghcr.io/<你的用户名>/cfnb-go:latest docker compose up -d
 #
-# 快速启动（在 deploy/ 目录下执行）：docker compose up -d
-# 查看日志：docker compose logs -f
+# 路径说明：volumes 的相对路径基于「本文件所在目录」解析（本文件在 deploy/），
+# 因此 ./data/ 即 deploy/data/；compose 规范要求相对路径必须以 . 或 .. 开头。
+#
 # 也可从仓库根执行：docker compose -f deploy/docker-compose.yml up -d
-#
-# 路径说明：volumes 的相对路径基于「本文件所在目录」解析，
-# 因此 ../ 指向仓库根（compose 规范要求相对路径必须以 . 或 .. 开头）。
 
 services:
   cfnb:
@@ -42,24 +42,24 @@ services:
     volumes:
       # 主配置（含 Cloudflare / WxPusher / GitHub 令牌）；仓库自带，不会缺失
       - type: bind
-        source: ../configs/config.json
+        source: ./data/config.json
         target: /app/config.json
         bind:
           create_host_path: false
-      # 优选结果持久化；启动前需先创建空文件：touch ip.txt
+      # 优选结果持久化；仓库自带空白文件，程序会覆盖写入
       - type: bind
-        source: ../ip.txt
+        source: ./data/ip.txt
         target: /app/ip.txt
         bind:
           create_host_path: false
-      # 以下两项启用 IP 地区校准时取消注释（对应文件同样需先创建）
+      # 以下两项启用 IP 地区校准时取消注释（需自行创建对应文件）
       # - type: bind
-      #   source: ../valid_tokens.txt
+      #   source: ./data/valid_tokens.txt
       #   target: /app/valid_tokens.txt
       #   bind:
       #     create_host_path: false
       # - type: bind
-      #   source: ../ipinfo_cache.txt
+      #   source: ./data/ipinfo_cache.txt
       #   target: /app/ipinfo_cache.txt
       #   bind:
       #     create_host_path: false

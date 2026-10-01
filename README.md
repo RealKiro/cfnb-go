@@ -67,7 +67,7 @@
 
 ```bash
 tar -xzf cfnb-1.0.0-linux-amd64.tar.gz
-cp configs/config.json .        # 程序读取二进制同目录的 config.json
+cp deploy/data/config.json .    # 程序读取二进制同目录的 config.json
 ./cfnb --version
 ```
 
@@ -85,10 +85,10 @@ CI 会自动交叉编译 6 个平台、打包并创建 Release（含 `checksums.
 # 1. 编译（Go 1.21+）
 go build -trimpath -ldflags="-s -w" -o cfnb ./cmd/cfnb
 
-# 2. 按需修改 configs/config.json（Cloudflare / WxPusher / GitHub 令牌）
+# 2. 按需修改 deploy/data/config.json（Cloudflare / WxPusher / GitHub 令牌）
 
 # 3. 把配置放到二进制同目录后运行一次
-cp configs/config.json .
+cp deploy/data/config.json .
 ./cfnb             # Linux / macOS
 cfnb.exe           # Windows
 
@@ -104,23 +104,31 @@ cfnb.exe           # Windows
 镜像由 GitHub Actions 自动构建并推送到 GHCR，支持 `amd64` / `arm64`。**compose 只从 GHCR 拉取镜像，不做本地构建**，因此无需安装 Go 工具链、也不会下载 `golang` 基础镜像：
 
 ```bash
-# 1. 进入项目目录
-cd /path/to/cfnb-go
+# 1. 进入 deploy 目录（所有相对路径以 compose 文件为基准）
+cd /path/to/cfnb-go/deploy
 
-# 2. 按需修改 configs/config.json（填入 Cloudflare / WxPusher / GitHub 令牌）
+# 2. 按需修改 data/config.json（填入 Cloudflare / WxPusher / GitHub 令牌）
 
-# 3. 先创建 ip.txt（用于结果持久化挂载）
-#    这一步必须做：Docker 短语法挂载遇到不存在的宿主路径时，会把它创建成「同名目录」，
-#    于是容器内 /app/ip.txt 变成目录，程序写入时报 is a directory，
-#    并连带跳过 Cloudflare DNS 更新与 GitHub 同步。compose 已改用长语法
-#    （create_host_path: false），文件缺失时会在启动阶段直接报错，而不是静默建目录。
-touch ip.txt
+# 3. 启动（默认拉取 ghcr.io/realkiro/cfnb-go:latest，每 5 分钟自动运行一次）
+docker compose up -d
 
-# 4. 启动（默认拉取 ghcr.io/realkiro/cfnb-go:latest，每 5 分钟自动运行一次）
+# 4. 查看日志
+docker compose logs -f
+```
+
+运行时数据都在 `deploy/data/` 下，路径只用一个点：
+
+| 宿主文件 | 容器内 | 说明 |
+| :--- | :--- | :--- |
+| `deploy/data/config.json` | `/app/config.json` | 配置模板，仓库自带，改好令牌即可 |
+| `deploy/data/ip.txt` | `/app/ip.txt` | 空白结果文件，仓库自带，程序运行时覆盖写入 |
+
+两个文件都随仓库分发，所以克隆后**无需任何额外准备**，`docker compose up -d` 即可运行；程序退出后 `deploy/data/ip.txt` 就是优选结果。
+
+也可以从仓库根执行（compose 的相对路径仍以 `deploy/` 为基准，不会错位）：
+
+```bash
 docker compose -f deploy/docker-compose.yml up -d
-
-# 5. 查看日志
-docker compose -f deploy/docker-compose.yml logs -f
 ```
 
 镜像来源与拉取策略通过 `deploy/.env` 覆盖（默认值见表格）：
@@ -137,8 +145,8 @@ cp deploy/.env.example deploy/.env
 docker run -d --name cfnb-go \
   -e RUN_INTERVAL=300 \
   -e TZ=Asia/Shanghai \
-  --mount type=bind,source="$(pwd)"/configs/config.json,target=/app/config.json \
-  --mount type=bind,source="$(pwd)"/ip.txt,target=/app/ip.txt \
+  --mount type=bind,source="$(pwd)"/deploy/data/config.json,target=/app/config.json \
+  --mount type=bind,source="$(pwd)"/deploy/data/ip.txt,target=/app/ip.txt \
   ghcr.io/realkiro/cfnb-go:latest
 ```
 
@@ -148,9 +156,9 @@ docker run -d --name cfnb-go \
 | 镜像来源 | 环境变量 `CFNB_IMAGE` 注入；**未设置时回退为官方镜像 `ghcr.io/realkiro/cfnb-go:latest`**，fork 用户可在 `deploy/.env` 里改成自己的地址 |
 | 拉取策略 | 环境变量 `CFNB_PULL_POLICY`，默认 `missing`（本地无缓存时才拉取）。可选 `always`（每次 up 检查更新）/ `never`（只用本地已有镜像，不联网） |
 | 镜像构建 | **只由 CI 构建**：compose 无 `build` 段，本地不编译镜像。需要自定义镜像时请 fork 后改代码，由 CI 推送你自己的 GHCR（`deploy/Dockerfile` 仅被 CI 引用） |
-| 挂载方式 | 长语法 bind + `create_host_path: false`：宿主文件缺失时启动即报错并指名路径，不会被静默创建成目录。因此**`ip.txt` 必须先 `touch` 创建**；容器入口也会兜底检测，若发现挂载点被建成目录会打印提示后退出 |
+| 挂载方式 | 长语法 bind + `create_host_path: false`：宿主文件缺失时启动即报错并指名路径，不会被静默创建成目录。两个挂载文件都随仓库分发，开箱即用；容器入口另有兜底检测，若发现挂载点被建成目录会打印修复指引后退出 |
 | `RUN_INTERVAL` | 循环间隔（秒）。默认 `0` = 只运行一次；compose 默认设为 `300`（5 分钟） |
-| 挂载 `configs/config.json` | 修改参数无需重建镜像；也可用 `CFNB_CONFIG` 环境变量指定容器内其他配置路径 |
+| 挂载 `deploy/data/config.json` | 修改参数无需重建镜像；也可用 `CFNB_CONFIG` 环境变量指定容器内其他配置路径 |
 | 手动运行一次 | `docker compose -f deploy/docker-compose.yml run --rm cfnb`（临时忽略循环需加 `-e RUN_INTERVAL=0`） |
 | 调试 | `docker compose -f deploy/docker-compose.yml run --rm cfnb sh` |
 
@@ -167,7 +175,7 @@ docker run -d --name cfnb-go \
 
 ## ⚙️ 配置说明
 
-全部参数位于 `configs/config.json`，文件内已带逐项注释。常用项速查：
+全部参数位于 `deploy/data/config.json`，文件内已带逐项注释。常用项速查：
 
 | 参数 | 默认值 | 说明 |
 | :--- | :--- | :--- |
@@ -239,9 +247,10 @@ docker run -d --name cfnb-go \
 │   ├── lock_unix.go           # 单实例锁（flock）
 │   ├── lock_windows.go        # 单实例锁（Windows 独占句柄）
 │   └── parse_test.go          # 单元测试
-├── configs/
-│   └── config.json            # 配置文件（含逐项注释）
 ├── deploy/                    # 部署相关
+│   ├── data/                  # 运行时数据（挂载源，compose 中写作 ./data/...）
+│   │   ├── config.json        # 配置文件模板（含逐项注释）
+│   │   └── ip.txt             # 空白结果文件，程序运行时覆盖写入
 │   ├── Dockerfile             # Alpine 多阶段构建（由 CI 使用，compose 不引用）
 │   ├── docker-compose.yml     # 一键部署（从 GHCR 拉取镜像）
 │   ├── docker-entrypoint.sh   # 容器入口（定时循环 / 参数透传）

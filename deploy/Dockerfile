@@ -30,7 +30,7 @@ WORKDIR /app
 
 # 二进制与配置必须同目录：程序通过 os.Executable() 定位 config.json / ip.txt
 COPY --from=builder /out/cfnb /app/cfnb
-COPY configs/config.json /app/config.json
+COPY deploy/data/config.json /app/config.json
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
 
 RUN chmod +x /app/cfnb /app/docker-entrypoint.sh

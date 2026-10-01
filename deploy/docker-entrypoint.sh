@@ -22,15 +22,14 @@ cd /app
 check_not_dir() {
     if [ -d "$1" ]; then
         echo "[entrypoint] 错误：$1 是目录，不是文件。" >&2
-        echo "[entrypoint] 宿主机上的 $2 很可能不存在，被 Docker 自动创建成了同名目录。" >&2
-        echo "[entrypoint] 请删除该目录后重建为文件：" >&2
-        echo "[entrypoint]   ip.txt      -> touch ip.txt" >&2
-        echo "[entrypoint]   config.json -> git checkout -- configs/config.json" >&2
+        echo "[entrypoint] 宿主机的 $2 很可能不存在，被 Docker 自动创建成了同名目录。" >&2
+        echo "[entrypoint] 两个文件都随仓库分发，用 git 恢复即可：" >&2
+        echo "[entrypoint]   rm -r $2 && git checkout -- $2" >&2
         exit 1
     fi
 }
-check_not_dir /app/config.json configs/config.json
-check_not_dir /app/ip.txt ip.txt
+check_not_dir /app/config.json deploy/data/config.json
+check_not_dir /app/ip.txt      deploy/data/ip.txt
 
 INTERVAL="${RUN_INTERVAL:-0}"
 
