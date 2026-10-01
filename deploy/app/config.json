@@ -10,8 +10,8 @@
     "PER_COUNTRY_TOP_N": 1,
     "_comment_PER_COUNTRY_TOP_N": "分国家模式下每个国家保留的节点数量",
 
-    "BANDWIDTH_CANDIDATES": 150,
-    "_comment_BANDWIDTH_CANDIDATES": "进入带宽测速的候选节点数（从TCP通过者中选取前N个）",
+    "BANDWIDTH_CANDIDATES": 300,
+    "_comment_BANDWIDTH_CANDIDATES": "进入带宽测速的候选节点数（从TCP通过者中选取前N个）。需大于 GLOBAL_TOP_N；默认 300 是为了抵消 IPv6 落地过滤的筛减（实测该过滤会砍掉候选池的 59%~92%），150 时最终常不足 GLOBAL_TOP_N",
 
     "TCP_PROBES": 1,
     "_comment_TCP_PROBES": "每个节点测试 TCP 连接的次数",

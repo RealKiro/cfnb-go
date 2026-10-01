@@ -108,11 +108,20 @@ func extractRiskScore(v any) float64 {
 
 // batchUpdateCloudflareDNS 将优选结果原子批量更新到 Cloudflare DNS。
 // 仅作用于 DNS 环节的过滤：端口(443) → IPv6 落地 → 国家黑名单 → IP 风险等级（带回退）
+//
+// 候选顺序以 finalSelected 优先，即与 ip.txt 的排列（加权分降序）一致；其余
+// 带宽测速通过节点按速度降序跟在后面，作为补位池。此前该循环直接遍历
+// bwResults（速度降序），于是同一批节点存在两套排序口径：在
+// 「带宽通过数 > GLOBAL_TOP_N」时不仅首选不同、集合也不同——实测出现过
+// ip.txt 的 Top10 与写入 DNS 的 10 个零重合，排查时极易误判。补位池保留的原因
+// 是：优选名单里的节点可能被端口/IPv6/黑名单/风险过滤剔除，此时仍需能补足
+// targetCount，不该让 DNS 记录数无故变少（补位发生时会打印提示）。
+//
 // 返回实际写入 DNS 的节点列表（供筛子统计「DNS写入」工序使用；未启用时返回 nil）
 func batchUpdateCloudflareDNS(
 	cfg *Config,
 	notifier *Notifier,
-	ipList []string,
+	finalSelected []string,
 	stacks map[string]string,
 	bwResults []BandwidthResult,
 	latencyMap map[string]float64,
@@ -188,7 +197,12 @@ func batchUpdateCloudflareDNS(
 			}
 		}
 
-		for _, r := range bwResults {
+		// 让 DNS 的挑选顺序与 ip.txt 一致（优选项前置），其余节点作补位池
+		preferredSet := make(map[string]struct{}, len(finalSelected))
+		for _, n := range finalSelected {
+			preferredSet[n] = struct{}{}
+		}
+		for _, r := range orderCandidatesForDNS(bwResults, finalSelected) {
 			nodeStr := r.Node
 			ip, rest, ok := strings.Cut(nodeStr, ":")
 			if !ok {
@@ -285,6 +299,21 @@ func batchUpdateCloudflareDNS(
 			unit = "IP:端口"
 		}
 		logf("从 %d 个测速节点中筛选出 %d 个%s 用于 DNS 更新（%s）。", len(bwResults), len(dnsContentList), unit, filterStr)
+		// DNS 名单与 ip.txt 不重合时必须显式说明，否则会被当成新的不一致去排查。
+		// 补位有两种成因——优选节点被上述规则拦下，或优选名单本身就少于 targetCount
+		// （例如 GLOBAL_TOP_N=5 而 DNS_UPDATE_TARGET_COUNT=8，此时过滤计数为 0），
+		// 所以措辞只陈述来源、不把原因归给过滤
+		backfilled := 0
+		for _, node := range dnsNodeList {
+			if _, ok := preferredSet[node]; !ok {
+				backfilled++
+			}
+		}
+		if backfilled > 0 {
+			preferredUsed := len(dnsNodeList) - backfilled
+			logf("   ↳ 顺序与 %s 一致：%d 个取自最终优选，另有 %d 个来自其余测速通过节点（目标 %d 个，优选名单不足或被上述规则拦下时补位）。",
+				cfg.OutputFile, preferredUsed, backfilled, targetCount)
+		}
 		// 逐类列出被拦下的具体节点：只有汇总数时无法判断「是谁、被哪条规则
 		// 拦下」，排查 ip.txt 与 DNS 名单不一致时只能事后手工反查 API
 		logFilterDetail("非443端口", portDropped)
@@ -300,14 +329,26 @@ func batchUpdateCloudflareDNS(
 	}
 
 	// ---------- 无候选时降级 ----------
+	// 降级源是 finalSelected（node 形式，带端口），而非此前的裸 IP 列表：
+	// 后者在 TXT 模式缺端口信息、只能整段放弃，现在两种记录类型都能降级出结果
 	if len(dnsContentList) == 0 {
-		if len(ipList) > 0 {
-			logf("未能从完整测速结果构建 DNS 列表，降级使用 ip.txt 中的 IP。")
-			if recordType == "A" {
-				dnsContentList = append(dnsContentList, ipList...)
-				dnsNodeList = append(dnsNodeList, ipList...)
-			} else {
-				logf("TXT 模式需要端口信息，但降级数据中无端口，DNS 更新跳过。")
+		if len(finalSelected) > 0 {
+			logf("未能从带宽测速结果构建 DNS 列表，降级使用最终优选名单（%s）。", cfg.OutputFile)
+			for _, node := range finalSelected {
+				ip, rest, ok := strings.Cut(node, ":")
+				if !ok {
+					continue
+				}
+				if recordType == "A" {
+					dnsContentList = append(dnsContentList, ip)
+				} else {
+					port, _, _ := strings.Cut(rest, "#")
+					dnsContentList = append(dnsContentList, ip+":"+port)
+				}
+				dnsNodeList = append(dnsNodeList, node)
+			}
+			if len(dnsContentList) == 0 {
+				logf("最终优选名单中没有可用于 %s 记录的节点，DNS 更新跳过。", recordType)
 				return nil
 			}
 		} else {
@@ -410,6 +451,42 @@ func logFilterDetail(reason string, nodes []string) {
 		suffix = fmt.Sprintf(" …（另有 %d 个）", len(nodes)-filterDetailLimit)
 	}
 	logf("   ↳ %s 拦下 %d 个：%s%s", reason, len(nodes), strings.Join(head, ", "), suffix)
+}
+
+// orderCandidatesForDNS 让进入 DNS 的候选顺序与 ip.txt 保持一致：
+// preferred（最终优选，加权分降序）中存在的节点按其原序前置，
+// 其余带宽测速通过节点保持原序（速度降序）跟在后面，作为过滤淘汰时的补位池。
+// preferred 里若含不在 bwResults 中的节点（理论上不该有）直接忽略。
+func orderCandidatesForDNS(bwResults []BandwidthResult, preferred []string) []BandwidthResult {
+	if len(bwResults) == 0 {
+		return nil
+	}
+	if len(preferred) == 0 {
+		return bwResults
+	}
+
+	byNode := make(map[string]BandwidthResult, len(bwResults))
+	for _, r := range bwResults {
+		byNode[r.Node] = r
+	}
+
+	out := make([]BandwidthResult, 0, len(bwResults))
+	picked := make(map[string]struct{}, len(preferred))
+	for _, node := range preferred {
+		r, ok := byNode[node]
+		if !ok {
+			continue
+		}
+		out = append(out, r)
+		picked[node] = struct{}{}
+	}
+	for _, r := range bwResults {
+		if _, ok := picked[r.Node]; ok {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // submitDNSRecords 单次原子批量更新（删除全部旧记录 + 创建新记录）

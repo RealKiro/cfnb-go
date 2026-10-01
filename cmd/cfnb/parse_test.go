@@ -251,7 +251,9 @@ func TestParseAdaptiveMixedText(t *testing.T) {
 
 func TestConfigDefaultsAndOverride(t *testing.T) {
 	cfg := defaultConfig()
-	if cfg.GlobalTopN != 15 || cfg.BandwidthCandidat != 150 {
+	// BandwidthCandidat 默认 300：IPv6 落地过滤实测会砍掉候选池的 59%~92%，
+	// 150 时最终常凑不满 GLOBAL_TOP_N
+	if cfg.GlobalTopN != 15 || cfg.BandwidthCandidat != 300 {
 		t.Fatalf("默认配置异常: %+v", cfg)
 	}
 	// json.Unmarshal 只覆盖出现的字段，未出现字段保持默认
@@ -265,7 +267,7 @@ func TestConfigDefaultsAndOverride(t *testing.T) {
 	if c.CFEnabled {
 		t.Errorf("CF_ENABLED 应为 false")
 	}
-	if c.BandwidthCandidat != 150 {
+	if c.BandwidthCandidat != 300 {
 		t.Errorf("未配置字段应保持默认值，BandwidthCandidat = %d", c.BandwidthCandidat)
 	}
 }

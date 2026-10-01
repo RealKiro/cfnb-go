@@ -175,7 +175,7 @@ func defaultConfig() Config {
 		UseGlobalMode:     true,
 		GlobalTopN:        15,
 		PerCountryTopN:    1,
-		BandwidthCandidat: 150,
+		BandwidthCandidat: 300,
 
 		TCPProbes:             1,
 		MinSuccessRate:        1.0,

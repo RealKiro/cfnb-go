@@ -250,7 +250,7 @@ docker run -d --name cfnb-go \
 | :--- | :--- | :--- |
 | `USE_GLOBAL_MODE` | `true` | `true`=全局优选；`false`=分国家优选 |
 | `GLOBAL_TOP_N` / `PER_COUNTRY_TOP_N` | `15` / `1` | 两种模式的保留数量 |
-| `BANDWIDTH_CANDIDATES` | `150` | 进入测速的候选节点数 |
+| `BANDWIDTH_CANDIDATES` | `300` | 进入测速的候选节点数。需 ≥ `GLOBAL_TOP_N`；默认值偏大是为了抵消 IPv6 落地过滤的筛减（见下方《为什么默认只优选 IPv4》） |
 | `MIN_SUCCESS_RATE` | `1.0` | TCP 最低成功率阈值 |
 | `PRE_FILTER_PORTS` | `[443]` | TCP 测试前仅保留的端口 |
 | `PRE_FILTER_BLOCKED_COUNTRIES` | `["CN"]` | 前置黑名单（测试前剔除）。默认还会并入 DNS 环节的 `BLOCKED_COUNTRIES`，见下一行 |
@@ -338,6 +338,8 @@ CF 官方 IP 全部通过 HTTP 检测，且 TCP 延迟明显低于第三方反�
 - 同时写入 Cloudflare DNS 的 10 个却是 SG / JP / US / 无标签，速度 4.23 ~ 11.03 Mbps，**两边零重合**
 - 逐个反查可用性 API：那 10 个 HK 节点里 **9 个是 `ipv6_only`**，被 DNS 环节整批剔除 → 带宽测速选出的最优批次全部作废
 
+> ℹ️ 上面那轮「两边零重合」还有**第二条成因**：DNS 环节当时按速度排序挑节点、完全没看 `ip.txt`。这条已单独修掉，见《[DNS 写入的名单为什么与 `ip.txt` 一致](#dns-写入的名单为什么与-iptxt-一致)》——两者叠加才是那次零重合的完整解释。
+
 > ⚠️ 若你的客户端**确实有 IPv6**，或这些节点要用于 IPv6 场景，把 `PRE_BANDWIDTH_IPV6_FILTER_ENABLED` 设为 `false` 即恢复原行为。
 
 > ℹ️ 该过滤依赖可用性检测返回的协议栈信息。若 `TEST_AVAILABILITY` 为 `false`、或该轮可用性检测整体失败，拿不到协议栈时这一步会**自动跳过并在日志提示，不会误杀节点**。
@@ -349,6 +351,19 @@ CF 官方 IP 全部通过 HTTP 检测，且 TCP 延迟明显低于第三方反�
 `PRE_FILTER_USE_DNS_BLOCKLIST`（默认 `true`）让前置黑名单自动并入 DNS 黑名单，从此只需维护 `BLOCKED_COUNTRIES` 一份名单。设 `false` 则回到两份名单各自独立的老行为。
 
 前置黑名单**不误杀无标签节点**：拿不到落地国家就宁可放过（与 DNS 阶段口径一致）。因此 DNS 阶段仍可能拦下少量无标签节点，属预期行为。
+
+### DNS 写入的名单为什么与 `ip.txt` 一致
+
+最终优选（`ip.txt`）按**加权分**降序，而 DNS 环节此前是直接遍历「按速度降序」的测速结果取前 N 个——同一批节点存在**两套排序口径**。在「带宽通过数 > `GLOBAL_TOP_N`」时两者不仅首选不同、**集合也不同**（DNS 完全不看 `ip.txt`），实测出现过 `ip.txt` 的前 10 与写入 DNS 的 10 个**零重合**，排查时极易误判为过滤出错。
+
+现在 DNS 环节的候选顺序以最终优选（`ip.txt` 的排列）优先，其余测速通过节点按速度降序跟在后面**作为补位池**：优选节点若被端口 / IPv6 落地 / 国家黑名单 / 风险等级过滤剔除，仍能补足 `DNS_UPDATE_TARGET_COUNT`，不会让记录数无故变少。一旦发生补位，日志会显式提示：
+
+```
+从 27 个测速节点中筛选出 10 个IP:端口 用于 DNS 更新（IPv6落地过滤(0个) + DNS黑名单过滤(0个)）。
+   ↳ 名单按 ip.txt 的顺序取自最终优选（命中 8 个），另有 2 个因优选节点被上述规则拦下而从其余测速节点补位。
+```
+
+想让 DNS 只写「最快」的节点，也可以——把 `SPEED_WEIGHT` 之外的三个权重都设为 `0`，加权分就退化成速度排序，两套口径自然合一。
 
 ### GitHub 源为什么走镜像
 
@@ -455,7 +470,7 @@ cf.090227.xyz                 27          27          27         27         0   
 💡 每列为该工序结束后的剩余节点数，合计行即当轮总量。
 ```
 
-工序顺序固定为：**📥 抓取 → 🧹 去重合并 → 🚧 前置过滤 → 🔌 TCP 通过 → 🎯 候选池 → 🩺 可用通过 → 🌐 HTTP 通过 → 🚀 带宽通过 → 🏆 最终入选 → 📡 DNS 写入**。后段的可用性 / HTTP / 带宽 / DNS 工序若在配置里关闭，就不会出现对应列。
+工序顺序固定为：**📥 抓取 → 🧹 去重合并 → 🚧 前置过滤 → 🔌 TCP 通过 → 🎯 候选池 → 🩺 可用通过 → 🛡 IPv6 过滤 → 🌐 HTTP 通过 → 🚀 带宽通过 → 🏆 最终入选 → 📡 DNS 写入**。后段的可用性 / HTTP / 带宽 / DNS 工序若在配置里关闭，就不会出现对应列（上面的示例日志取自加入 IPv6 过滤之前的版本，故没有该列）。
 
 看日志时的几个要点：
 
@@ -562,12 +577,13 @@ push main ──> ci.yml ──> 完成（success）──> release.yml
 1. **容器内跑完一次就退出了？** 镜像默认 `RUN_INTERVAL=0` 为单次运行；`docker compose` 默认 300 秒（5 分钟）循环，在 `deploy/.env` 里改 `RUN_INTERVAL` 即可。
 2. **带宽测速全部失败？** 程序会降级使用 TCP 排序结果并发送微信通知；可适当调大 `BANDWIDTH_TIMEOUT`、降低 `BANDWIDTH_SIZE_MB`。
 3. **TCP 测试无节点通过？** 这是第一道硬门槛（无回退）：检查网络能否直连，或降低 `MIN_SUCCESS_RATE`。
-4. **DNS 更新记录数少于 `DNS_UPDATE_TARGET_COUNT`？** 属正常现象：端口 / IPv6 落地 / 黑名单 / 风险等级过滤会剔除部分节点，可通过增大 `BANDWIDTH_CANDIDATES` 扩大候选池。
-5. **提示"检测到本程序已在运行"？** 单实例锁生效，避免定时任务重叠；锁文件为程序同目录 `.run.lock`。
-6. **IP 地区校准很慢？** 调低 `IP_CALIBRATION_CONCURRENCY` 或增大 `IP_CALIBRATION_MIN_INTERVAL`；不使用则设 `IP_CALIBRATION_ENABLED: false`。
-7. **代理环境影响？** 与 Python 版一致：TCP / HTTP / 测速阶段强制直连，API 类请求（抓取、可用性、通知、GitHub）跟随系统代理；`FORCE_DIRECT: true` 可全部直连。
-8. **某个数据源明明有数据，却显示「解析出 0 个节点」？** 日志会紧接着打印 HTTP 状态、`Content-Type`、字节数和响应开头片段，照那段就能判断是空响应、HTML 拦截页还是格式不匹配（见[数据源解析出 0 个节点怎么办](#数据源解析出-0-个节点怎么办)）。程序也会把它当作抓取失败自动重试 `FETCH_MAX_RETRIES` 次，源站单次抖动不会再让整条源白跑一轮。
-9. **日志里的进度条变成了十几行？** 这是刻意的：`docker logs` / 文件 / 日志查看器不是终端，`\r` 原地刷新会把几十帧挤成一行，所以检测到非终端时改为每 10% 打一行。想要回终端那样的单行刷新，用 `docker compose logs -f` 之外的方式（如 `docker attach`）或本地直接运行即可。
+4. **DNS 更新记录数少于 `DNS_UPDATE_TARGET_COUNT`？** 属正常现象：端口 / IPv6 落地 / 黑名单 / 风险等级过滤会剔除部分节点，可通过增大 `BANDWIDTH_CANDIDATES` 扩大候选池（默认已设为 `300`）。日志里会分类列出被拦下的节点明细，照着看即可定位是哪条规则。
+5. **最终优选不足 `GLOBAL_TOP_N` 个？** 同上，主要是 IPv6 落地过滤的筛减（实测砍掉候选池的 59%~92%），把 `BANDWIDTH_CANDIDATES` 继续调大即可；把 `PRE_BANDWIDTH_IPV6_FILTER_ENABLED` 设为 `false` 也能恢复节点数，代价是 `ip.txt` 会混入 IPv4 客户端用不了的节点。
+6. **提示"检测到本程序已在运行"？** 单实例锁生效，避免定时任务重叠；锁文件为程序同目录 `.run.lock`。
+7. **IP 地区校准很慢？** 调低 `IP_CALIBRATION_CONCURRENCY` 或增大 `IP_CALIBRATION_MIN_INTERVAL`；不使用则设 `IP_CALIBRATION_ENABLED: false`。
+8. **代理环境影响？** 与 Python 版一致：TCP / HTTP / 测速阶段强制直连，API 类请求（抓取、可用性、通知、GitHub）跟随系统代理；`FORCE_DIRECT: true` 可全部直连。
+9. **某个数据源明明有数据，却显示「解析出 0 个节点」？** 日志会紧接着打印 HTTP 状态、`Content-Type`、字节数和响应开头片段，照那段就能判断是空响应、HTML 拦截页还是格式不匹配（见[数据源解析出 0 个节点怎么办](#数据源解析出-0-个节点怎么办)）。程序也会把它当作抓取失败自动重试 `FETCH_MAX_RETRIES` 次，源站单次抖动不会再让整条源白跑一轮。
+10. **日志里的进度条变成了十几行？** 这是刻意的：`docker logs` / 文件 / 日志查看器不是终端，`\r` 原地刷新会把几十帧挤成一行，所以检测到非终端时改为每 10% 打一行。想要回终端那样的单行刷新，用 `docker compose logs -f` 之外的方式（如 `docker attach`）或本地直接运行即可。
 
 ---
 

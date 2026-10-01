@@ -197,12 +197,9 @@ func run(cfg *Config, baseDir string) {
 	logf("\n💾 结果已保存到 %s（共 %d 个节点）", cfg.OutputFile, len(finalSelected))
 
 	// ---------- 8. Cloudflare DNS 更新 ----------
-	ipList := make([]string, 0, len(finalSelected))
-	for _, node := range finalSelected {
-		ip, _, _ := strings.Cut(node, ":")
-		ipList = append(ipList, ip)
-	}
-	dnsWritten := batchUpdateCloudflareDNS(cfg, notifier, ipList, availStacks, bwResults, latencyMap, httpLatencyMap, httpJitterMap)
+	// 传入 finalSelected 而非裸 IP 列表：DNS 环节据此按与 ip.txt 相同的顺序选取，
+	// 且降级分支能拿到端口信息（TXT 模式此前只能整段放弃）
+	dnsWritten := batchUpdateCloudflareDNS(cfg, notifier, finalSelected, availStacks, bwResults, latencyMap, httpLatencyMap, httpJitterMap)
 	// 仅在启用 CF 更新时记录该工序：未启用则整道工序没跑，记 0 会误导
 	if cfg.CFEnabled {
 		sieve.recordNodes("DNS写入", dnsWritten)
