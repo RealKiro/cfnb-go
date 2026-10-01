@@ -36,7 +36,7 @@ services:
     container_name: cfnb-go
     restart: unless-stopped
     environment:
-      - RUN_INTERVAL=300              # 每 5 分钟运行一次；0 = 只运行一次
+      - RUN_INTERVAL=600              # 每 10 分钟运行一次；0 = 只运行一次
       - TZ=Asia/Shanghai
       # - CFNB_CONFIG=/app/config.json  # 可选：显式指定配置文件路径
     volumes:

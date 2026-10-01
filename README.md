@@ -177,7 +177,7 @@ cp deploy/.env.example deploy/.env
 
 ```bash
 docker run -d --name cfnb-go \
-  -e RUN_INTERVAL=300 \
+  -e RUN_INTERVAL=600 \
   -e TZ=Asia/Shanghai \
   -v "$(pwd)"/deploy/app/config.json:/app/config.json \
   -v "$(pwd)"/deploy/app/ip.txt:/app/ip.txt \
@@ -193,7 +193,7 @@ docker run -d --name cfnb-go \
 | 拉取策略 | 环境变量 `CFNB_PULL_POLICY`，默认 `missing`（本地无缓存时才拉取）。可选 `always`（每次 up 检查更新）/ `never`（只用本地已有镜像，不联网） |
 | 镜像构建 | **只由 CI 构建**：compose 无 `build` 段，本地不编译镜像。需要自定义镜像时请 fork 后改代码，由 CI 推送你自己的 GHCR（`deploy/Dockerfile` 仅被 CI 引用） |
 | 挂载方式 | 短语法 `./app/x:/app/x`，宿主与容器同名，只一个点。两个挂载文件都随仓库分发，开箱即用；若被手工删除，容器入口会检测到挂载点被 Docker 建成目录并打印修复指引后退出 |
-| `RUN_INTERVAL` | 循环间隔（秒）。默认 `0` = 只运行一次；compose 默认设为 `300`（5 分钟） |
+| `RUN_INTERVAL` | 循环间隔（秒）。默认 `0` = 只运行一次；compose 默认设为 `600`（10 分钟）。注意它是**跑完一轮后 sleep 的间隔**，所以真实周期 = 单轮耗时 + 间隔 |
 | 挂载 `deploy/app/config.json` | 修改参数无需重建镜像；也可用 `CFNB_CONFIG` 环境变量指定容器内其他配置路径 |
 | 手动运行一次 | `docker compose -f deploy/docker-compose.yml run --rm cfnb`（临时忽略循环需加 `-e RUN_INTERVAL=0`） |
 | 调试 | `docker compose -f deploy/docker-compose.yml run --rm cfnb sh` |
@@ -373,7 +373,7 @@ push main ──> ci.yml ──> 完成（success）──> release.yml
 
 ## ❓ 常见问题
 
-1. **容器内跑完一次就退出了？** 默认 `RUN_INTERVAL=0` 为单次运行；`docker compose` 已默认设为 300 秒循环。
+1. **容器内跑完一次就退出了？** 默认 `RUN_INTERVAL=0` 为单次运行；`docker compose` 已默认设为 600 秒（10 分钟）循环。
 2. **带宽测速全部失败？** 程序会降级使用 TCP 排序结果并发送微信通知；可适当调大 `BANDWIDTH_TIMEOUT`、降低 `BANDWIDTH_SIZE_MB`。
 3. **TCP 测试无节点通过？** 这是第一道硬门槛（无回退）：检查网络能否直连，或降低 `MIN_SUCCESS_RATE`。
 4. **DNS 更新记录数少于 `DNS_UPDATE_TARGET_COUNT`？** 属正常现象：端口 / IPv6 落地 / 黑名单 / 风险等级过滤会剔除部分节点，可通过增大 `BANDWIDTH_CANDIDATES` 扩大候选池。
