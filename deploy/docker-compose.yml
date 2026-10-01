@@ -4,10 +4,13 @@
 # 使用前确保仓库根存在 configs/config.json（仓库自带，改好令牌即可）
 # ip.txt 若不存在请先执行：touch ip.txt
 #
-# 镜像名不写死：通过环境变量 CFNB_IMAGE 注入（支持 .env 文件，参考 deploy/.env.example）
-#   - 修改 deploy/ 下的 .env:  CFNB_IMAGE=ghcr.io/<你的用户名>/cfnb-go:latest
-#   - 或启动时临时指定:        CFNB_IMAGE=xxx docker compose up -d
-#   - 未设置时回退为本地构建
+# 镜像来源由两个环境变量决定（支持 deploy/.env，参考 deploy/.env.example）：
+#   CFNB_IMAGE        默认 ghcr.io/realkiro/cfnb-go:latest（官方镜像，开箱即用）
+#   CFNB_PULL_POLICY  默认 missing（本地无缓存时才拉取）
+#
+#   拉取官方镜像（默认，零配置）：docker compose up -d
+#   用自己 fork 的镜像：          CFNB_IMAGE=ghcr.io/<你的用户名>/cfnb-go:latest
+#   从源码本地构建：              CFNB_PULL_POLICY=build docker compose up -d --build
 #
 # 快速启动（在 deploy/ 目录下执行）：docker compose up -d
 # 查看日志：docker compose logs -f
@@ -15,8 +18,12 @@
 
 services:
   cfnb:
-    # 未设置 CFNB_IMAGE 时，使用下方 build 本地构建并打标签 cfnb-go:local
-    image: ${CFNB_IMAGE:-cfnb-go:local}
+    # 未设置 CFNB_IMAGE 时使用官方镜像（realkiro 的 GHCR 仓库）
+    image: "${CFNB_IMAGE:-ghcr.io/realkiro/cfnb-go:latest}"
+    # 显式声明，避免 image 与 build 并存时「拉取还是构建」的优先级歧义
+    # missing = 仅在本地无该镜像时拉取，永不自动构建（构建需显式 --build）
+    pull_policy: "${CFNB_PULL_POLICY:-missing}"
+    # 保留 build：需要从源码构建时用 CFNB_PULL_POLICY=build 或 --build
     build:
       context: ..
       dockerfile: deploy/Dockerfile

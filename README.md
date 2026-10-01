@@ -101,29 +101,34 @@ cfnb.exe           # Windows
 
 ### 方式三：Docker（推荐）
 
-镜像由 GitHub Actions 自动构建并推送到 GHCR，支持 `amd64` / `arm64`：
+镜像由 GitHub Actions 自动构建并推送到 GHCR，支持 `amd64` / `arm64`，**默认直接拉取官方镜像，无需本地构建**：
 
 ```bash
 # 1. 进入项目目录
 cd /path/to/cfnb-go
 
-# 2. 按需修改 configs/config.json
+# 2. 按需修改 configs/config.json（填入 Cloudflare / WxPusher / GitHub 令牌）
 
 # 3. 确保 ip.txt 存在（用于结果持久化挂载）
 touch ip.txt
 
-# 4.（可选）使用 GHCR 镜像而非本地构建：复制模板并填入你的地址
-cp deploy/.env.example deploy/.env && nano deploy/.env    # CFNB_IMAGE=ghcr.io/<你的用户名>/cfnb-go:latest
-
-# 5. 启动（默认每 5 分钟自动运行一次；未配置 CFNB_IMAGE 时自动本地构建）
+# 4. 启动（默认拉取 ghcr.io/realkiro/cfnb-go:latest，每 5 分钟自动运行一次）
 #    compose 文件位于 deploy/，构建上下文为仓库根目录
 docker compose -f deploy/docker-compose.yml up -d
 
-# 6. 查看日志
+# 5. 查看日志
 docker compose -f deploy/docker-compose.yml logs -f
 ```
 
-不想用 Compose 也可以直接 `docker run`（把 `<你的用户名>` 替换为仓库所属的 GitHub 用户名）：
+镜像来源与拉取策略通过 `deploy/.env` 覆盖（默认值见表格）：
+
+```bash
+cp deploy/.env.example deploy/.env
+# 用自己 fork 的镜像：CFNB_IMAGE=ghcr.io/<你的用户名>/cfnb-go:latest
+# 从源码本地构建：    CFNB_PULL_POLICY=build  然后 up -d --build
+```
+
+不想用 Compose 也可以直接 `docker run`：
 
 ```bash
 docker run -d --name cfnb-go \
@@ -131,18 +136,19 @@ docker run -d --name cfnb-go \
   -e TZ=Asia/Shanghai \
   -v $(pwd)/configs/config.json:/app/config.json \
   -v $(pwd)/ip.txt:/app/ip.txt \
-  ghcr.io/<你的用户名>/cfnb-go:latest
+  ghcr.io/realkiro/cfnb-go:latest
 ```
 
 | 项 | 说明 |
 | :--- | :--- |
-| 镜像地址 | `ghcr.io/<你的用户名>/cfnb-go:latest`（另有 `1.0.0` / `1.0` 版本标签与 `sha-xxxxxxx` 精确提交标签） |
-| 镜像来源 | `deploy/docker-compose.yml` **不写死镜像名**：通过环境变量 `CFNB_IMAGE` 注入（复制 `deploy/.env.example` 为 `deploy/.env` 填写）；未设置时回退为本地构建 |
+| 镜像地址 | 默认 `ghcr.io/realkiro/cfnb-go:latest`（另有 `1.0.0` / `1.0` 版本标签与 `sha-xxxxxxx` 精确提交标签） |
+| 镜像来源 | 环境变量 `CFNB_IMAGE` 注入；**未设置时回退为官方镜像 `ghcr.io/realkiro/cfnb-go:latest`**，fork 用户可在 `deploy/.env` 里改成自己的地址 |
+| 拉取策略 | 环境变量 `CFNB_PULL_POLICY`，默认 `missing`（本地无缓存时才拉取，不会自动本地构建）。可选 `always` / `never` / `build` |
+| 本地构建 | `CFNB_PULL_POLICY=build docker compose -f deploy/docker-compose.yml up -d --build`（或直接 `docker build -f deploy/Dockerfile -t cfnb-go:local .`，context 须为仓库根目录） |
 | `RUN_INTERVAL` | 循环间隔（秒）。默认 `0` = 只运行一次；compose 默认设为 `300`（5 分钟） |
 | 挂载 `configs/config.json` | 修改参数无需重建镜像；也可用 `CFNB_CONFIG` 环境变量指定容器内其他配置路径 |
 | 手动运行一次 | `docker compose -f deploy/docker-compose.yml run --rm cfnb`（临时忽略循环需加 `-e RUN_INTERVAL=0`） |
 | 调试 | `docker compose -f deploy/docker-compose.yml run --rm cfnb sh` |
-| 自建镜像 | `docker build -f deploy/Dockerfile -t cfnb-go .`（context 须为仓库根目录） |
 
 **Fork 用户**：CI 使用 `${{ github.repository }}` 自动定位仓库，fork 后推送到自己仓库，镜像会自动发布到 **你自己的** GHCR 命名空间（`ghcr.io/你的用户名/cfnb-go`），与原仓库互不影响：
 
@@ -150,6 +156,8 @@ docker run -d --name cfnb-go \
 2. 推送任意提交（或手动 `Run workflow` 触发），CI 会用你自己的 `GITHUB_TOKEN` 构建并推送到你的 GHCR；
 3. 首次发布的镜像包默认 **private**，如需公开拉取请到个人主页 **Packages → cfnb-go → Package settings → Change visibility** 设为 Public；
 4. 复制 `deploy/.env.example` 为 `deploy/.env`，填写 `CFNB_IMAGE=ghcr.io/你的用户名/cfnb-go:latest`。
+
+> 第 4 步是可选的：不配置时默认使用官方镜像，同样能正常启动。
 
 ---
 
