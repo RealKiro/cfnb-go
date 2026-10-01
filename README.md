@@ -68,8 +68,8 @@
 每个压缩包内含 **二进制 + `config.json`（带逐项注释的配置模板）**，解压后两者同目录，程序会自动读取：
 
 ```bash
-tar -xzf cfnb-1.0.0-linux-amd64.tar.gz
-# 解压得到：cfnb-1.0.0-linux-amd64（二进制）、config.json（配置模板）
+tar -xzf cfnb-2026.10.01-linux-amd64.tar.gz
+# 解压得到：cfnb-2026.10.01-linux-amd64（二进制）、config.json（配置模板）
 ./cfnb --version
 # 首次使用前编辑同目录的 config.json（Cloudflare / WxPusher / GitHub 令牌）
 ./cfnb                          # 结果写入同目录的 ip.txt
@@ -77,13 +77,15 @@ tar -xzf cfnb-1.0.0-linux-amd64.tar.gz
 
 不填任何令牌也能直接跑：程序会回退到内置默认值，只是不推送通知、不改 DNS、不同步 GitHub。
 
-仓库只保存源码，**编译产物一律不进仓库**（已被 `.gitignore` 排除）。发布新版本只需打标签：
+仓库只保存源码，**编译产物一律不进仓库**（已被 `.gitignore` 排除）。发布新版本只需打日期标签：
 
 ```bash
-git tag v1.0.1 && git push origin v1.0.1
+git tag v2026.10.02 && git push origin v2026.10.02
 ```
 
-CI 会自动交叉编译 6 个平台、把 `config.json` 一并打包进每个产物，并创建 Release（含 `checksums.txt`）。
+**版本号规范**：一律用日期标签 `vYYYY.MM.DD`，不递增语义化版本号。同一天多次发布则在后面追加序号，如 `v2026.10.02.2`。
+
+CI 会自动交叉编译 6 个平台、把 `config.json` 一并打包进每个产物，并创建 Release（含 `checksums.txt`）；镜像同时打上日期标签（`ghcr.io/realkiro/cfnb-go:2026.10.02`）与 `latest`。
 
 ### 方式二：本地运行（单二进制）
 
@@ -158,7 +160,7 @@ docker run -d --name cfnb-go \
 
 | 项 | 说明 |
 | :--- | :--- |
-| 镜像地址 | 默认 `ghcr.io/realkiro/cfnb-go:latest`（另有 `1.0.0` / `1.0` 版本标签与 `sha-xxxxxxx` 精确提交标签） |
+| 镜像地址 | 默认 `ghcr.io/realkiro/cfnb-go:latest`（另有日期标签如 `2026.10.01` 与 `sha-xxxxxxx` 精确提交标签） |
 | 镜像来源 | 环境变量 `CFNB_IMAGE` 注入；**未设置时回退为官方镜像 `ghcr.io/realkiro/cfnb-go:latest`**，fork 用户可在 `deploy/.env` 里改成自己的地址 |
 | 拉取策略 | 环境变量 `CFNB_PULL_POLICY`，默认 `missing`（本地无缓存时才拉取）。可选 `always`（每次 up 检查更新）/ `never`（只用本地已有镜像，不联网） |
 | 镜像构建 | **只由 CI 构建**：compose 无 `build` 段，本地不编译镜像。需要自定义镜像时请 fork 后改代码，由 CI 推送你自己的 GHCR（`deploy/Dockerfile` 仅被 CI 引用） |

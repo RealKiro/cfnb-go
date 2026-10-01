@@ -153,10 +153,13 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.image.outputs.name }}
+          # 版本号采用日期标签（如 v2026.10.01）。这里不用 type=semver：
+          # 日期里的 patch 段带前导零（.01），不是合法 semver，semver 解析会
+          # 失败并静默跳过，导致推 tag 却不产出镜像标签。
+          # type=match 对「纯标签名」做正则，v 前缀剥掉后得到 2026.10.01。
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=match,pattern=v(.*),group=1
             type=sha,prefix=sha-
 
       - name: 构建并推送（amd64 + arm64，Go 交叉编译无需 QEMU）
