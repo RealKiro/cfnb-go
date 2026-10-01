@@ -6,7 +6,10 @@ FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH
 
-# 版本号由 CI 通过 build-args 注入（见 .github/workflows/ci.yml）。
+# 版本号由工作流通过 build-args 注入：
+#   - CI（.github/workflows/ci.yml）：tag 推送用日期版本，main/手动用 sha-<短SHA>
+#   - Release（.github/workflows/release.yml）：用本次日期版本号重建，使
+#     :<日期版本> 标签与镜像内版本严格一致
 # 不能省：镜像由 CI 构建，但二进制若不带版本号，容器里 `--version` 只会显示
 # 源码中的默认值（1.0.0），排查时无法确认容器跑的到底是哪一版——实测踩过这个坑。
 # 缺省值 dev 仅用于手工 build。

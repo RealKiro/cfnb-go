@@ -7,14 +7,20 @@ name: Release
 #
 # 几个刻意的设计：
 #   1. 由 workflow_run 承接 CI 结果，而不是直接监听 push。
-#      这样「测试没过就不发版」；同时 CI 的 docker 任务已经把 sha-<短SHA> 镜像推上去了，
-#      补打版本镜像标签（见最后一个步骤）不会有竞态。
-#   2. 版本号取当天日期，同日再发自动追加序号：v2026.10.01 -> v2026.10.01.2 -> .3
-#   3. tag 由本工作流用 GITHUB_TOKEN 创建并推送。GITHUB_TOKEN 触发的 push 事件
+#      这样「测试没过就不发版」；同时 CI 的 docker 任务已先推送 sha-<短SHA> 镜像，
+#      本工作流随后用已知的版本号重建一份镜像（见「用本次版本号重新构建镜像」步骤），
+#      两者参照同一个 TARGET_SHA，不存在竞态。
+#   2. 镜像是**重建**而不是「把 sha 镜像补打成版本标签」。补标签（imagetools create）
+#      只改指向、不重新构建，而 CI 构建时注入的是 sha-<短SHA>（那一刻还不知道本次的
+#      日期版本号），于是镜像里 `cfnb --version` 永远显示 sha-xxx，与 :<日期版本> 对不上。
+#      改成用版本号重建后，标签与镜像内版本严格一致，并由「产物自证」步骤兜住回归。
+#   3. 版本号取当天日期，同日再发自动追加序号：v2026.10.01 -> v2026.10.01.2 -> .3
+#   4. tag 由本工作流用 GITHUB_TOKEN 创建并推送。GITHUB_TOKEN 触发的 push 事件
 #      不会再触发新工作流，因此不会与下面的 push:tags 形成递归发布。
-#   4. 校验「日期标签不能用 type=semver」的坑见 ci.yml 的 metadata 注释：
-#      这里自建的 tag 走 push:tags 通道时，镜像版本标签依赖 ci.yml 的 type=match。
-#   5. 只想跑 CI 不发版：**提交标题以 [skip release] 开头**。
+#   5. 校验「日期标签不能用 type=semver」的坑见 ci.yml 的 metadata 注释：
+#      这里自建的 tag 走 push:tags 通道时，镜像版本标签依赖 ci.yml 的 type=match
+#      —— 该通道由 CI 直接产出带正确版本号的镜像，故本工作流不再重建。
+#   6. 只想跑 CI 不发版：**提交标题以 [skip release] 开头**。
 #      刻意锚定标题开头而非「消息中任意位置出现」——否则任何在正文里解释这个标记的
 #      提交（比如更新本文档的提交）都会把自己跳过，我们就这样误跳过一次发版。
 #      另外只改 README/LICENSE 的提交连 CI 都不会触发（ci.yml 的 paths-ignore），自然也不发版。
@@ -159,26 +165,79 @@ jobs:
           echo "=== 内容抽查（linux-amd64）==="
           tar -tzf "dist/cfnb-${VERSION}-linux-amd64.tar.gz"
 
-      - name: 为本次版本补打 GHCR 镜像标签
-        # 自动通道下 CI 只产出了 latest 与 sha-<短SHA>，这里把 sha 镜像补打成版本标签，
-        # 让 ghcr.io/...:<版本> 与 Release 一一对应。
-        # tag 通道不需要（ci.yml 的 type=match 已直接产出），故排除 push。
+      - name: 设置 Docker Buildx
+        if: github.event_name != 'push'
+        uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        if: github.event_name != 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成小写镜像名（GHCR 要求全小写）
+        if: github.event_name != 'push'
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: 用本次版本号重新构建镜像
+        # 自动通道下 CI 只产出了 latest 与 sha-<短SHA>（构建时还不知道本次日期版本号），
+        # 所以这里用已算出的版本号重建一份多架构镜像，让 :<版本> 与镜像内版本一致。
+        # 开销很小：Go 交叉编译（arm64 无需 QEMU）+ GHA 层缓存复用，仅末层重建。
+        # tag 通道不需要（ci.yml 的 type=match 已直接产出正确版本），故排除 push。
+        if: github.event_name != 'push'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ steps.tag.outputs.version }}
+          build-args: |
+            VERSION=${{ steps.tag.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 产物自证：镜像内 --version 必须等于本次版本号
+        # 这一步是本次改造的回归护栏：只要有人把「重建」改回「补打标签」，
+        # 镜像内版本就会退回 sha-xxx，此处立即红灯，而不是等用户拉下来才发现。
         if: github.event_name != 'push'
         run: |
           set -eu
-          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          IMAGE="${{ steps.image.outputs.name }}"
           VERSION="${{ steps.tag.outputs.version }}"
-          SRC="${IMAGE}:sha-$(echo "${{ env.TARGET_SHA }}" | cut -c1-7)"
 
-          # CI 全绿是本 job 的前置条件，所以 sha 镜像必然已存在；查不到就说明假设被打破，直接失败
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker buildx version
-          docker buildx imagetools inspect "$SRC" > /dev/null
-          echo "  OK   找到 CI 产出的镜像 $SRC"
+          # 只取 amd64 单平台，避免在 arm64 runner 上多拉一份
+          docker pull --quiet --platform linux/amd64 "${IMAGE}:${VERSION}"
+          GOT=$(docker run --rm --platform linux/amd64 --entrypoint /app/cfnb \
+                  "${IMAGE}:${VERSION}" --version | awk '{print $2}')
+          echo "镜像内版本 = ${GOT}，期望 = ${VERSION}"
+          if [ "$GOT" != "$VERSION" ]; then
+            echo "::error::镜像内版本 ${GOT} 与发布版本 ${VERSION} 不一致"
+            exit 1
+          fi
+          echo "  OK   ${IMAGE}:${VERSION} 内部版本自证通过"
+          {
+            echo "### 镜像版本自证"
+            echo
+            echo "\`${IMAGE}:${VERSION}\` 内执行 \`cfnb --version\` → \`cfnb-go ${GOT}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          docker buildx imagetools create -t "${IMAGE}:${VERSION}" "$SRC"
-          echo "  OK   已补打 ${IMAGE}:${VERSION}"
-          echo "已将 \`${SRC}\` 补打为 \`${IMAGE}:${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: 让 latest 指向本次版本镜像
+        # 只在自动通道（main 的 push 触发）移动 latest，避免手动从其他分支
+        # 跑 workflow_dispatch 时把 latest 回退成非 main 的构建。
+        if: github.event_name == 'workflow_run'
+        run: |
+          set -eu
+          IMAGE="${{ steps.image.outputs.name }}"
+          VERSION="${{ steps.tag.outputs.version }}"
+
+          # imagetools 在这里只是「移动标签指向」，被指向的镜像已是带正确版本的重建产物
+          docker buildx imagetools create -t "${IMAGE}:latest" "${IMAGE}:${VERSION}"
+          echo "已将 \`${IMAGE}:latest\` 指向 \`${IMAGE}:${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+          docker buildx imagetools inspect "${IMAGE}:latest" | sed -n '1,6p'
 
       - name: 生成 Release 说明
         run: |
@@ -214,6 +273,10 @@ jobs:
           \`\`\`bash
           docker pull ghcr.io/realkiro/cfnb-go:latest
           docker pull ghcr.io/realkiro/cfnb-go:${{ steps.tag.outputs.version }}
+
+          # 镜像标签与镜像内版本严格一致，可直接自证
+          docker run --rm --entrypoint /app/cfnb ghcr.io/realkiro/cfnb-go:${{ steps.tag.outputs.version }} --version
+          # cfnb-go ${{ steps.tag.outputs.version }}
           \`\`\`
 
           ## 🔐 校验下载完整性
