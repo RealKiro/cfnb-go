@@ -169,20 +169,20 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.image.outputs.name }}
-          # 版本号采用日期标签（如 v2026.10.01）。这里不用 type=semver：
-          # 日期里的 patch 段带前导零（.01），不是合法 semver，semver 解析会
-          # 失败并静默跳过，导致推 tag 却不产出镜像标签。
-          # type=match 对「纯标签名」做正则，v 前缀剥掉后得到 2026.10.01。
+          # 版本号采用「日期+短SHA」标签（如 v2026.10.02.9f2c767）。这里不用
+          # type=semver：这种标签不是合法 semver，解析会失败并静默跳过，
+          # 导致推 tag 却不产出镜像标签。
+          # type=match 对「纯标签名」做正则，v 前缀剥掉后得到 2026.10.02.9f2c767。
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=match,pattern=v(.*),group=1
             type=sha,prefix=sha-
 
       - name: 计算注入二进制的版本号
-        # 让容器里的 `cfnb --version` 能自证版本。tag 推送用日期版本（2026.10.01.7），
+        # 让容器里的 `cfnb --version` 能自证版本。tag 推送用该 tag 的版本（日期+短SHA），
         # 其余（main / 手动）用 sha-<短SHA>，可反查 commit；二者都比默认值 1.0.0 有用。
-        # main 推送时这里还拿不到本次的日期版本号（要由 release 在同日已有标签上递增得出），
-        # 所以 :<日期版本> 镜像由 release 用该版本号**重新构建**一次，不是靠补打标签
+        # main 推送时这里还拿不到本次的版本号（由 release 按「日期+短SHA」生成），
+        # 所以 :<版本> 镜像由 release 用该版本号**重新构建**一次，不是靠补打标签
         # —— 补打只改指向、不重新构建，镜像内版本会与标签对不上（实测踩过这个坑）。
         id: ver
         run: |

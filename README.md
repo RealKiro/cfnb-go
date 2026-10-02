@@ -73,8 +73,8 @@
 每个压缩包内含 **二进制 + `config.json`（带逐项注释的配置模板）**，解压后两者同目录，程序会自动读取：
 
 ```bash
-tar -xzf cfnb-2026.10.01-linux-amd64.tar.gz
-# 解压得到：cfnb-2026.10.01-linux-amd64（二进制）、config.json（配置模板）
+tar -xzf cfnb-2026.10.02.9f2c767-linux-amd64.tar.gz
+# 解压得到：cfnb-2026.10.02.9f2c767-linux-amd64（二进制）、config.json（配置模板）
 ./cfnb --version
 # 首次使用前编辑同目录的 config.json（Cloudflare / WxPusher / GitHub 令牌）
 ./cfnb                          # 结果写入同目录的 ip.txt
@@ -89,21 +89,21 @@ push main ──> CI（测试 / 交叉编译 / 推送 GHCR）──> CI 全绿�
 ```
 
 - **测试没过就不发版**：发布由 CI 的最终结果驱动，红灯时不会产生 Release
-- **版本号**一律用日期标签 `vYYYY.MM.DD`（东八区），不递增语义化版本号。同一天多次发布自动追加序号：`v2026.10.01` → `v2026.10.01.2` → `v2026.10.01.3`
-- **只保留最新一版**：每次发版前自动删除所有旧 Release 及其 git 标签，仓库始终只有一个 Release。清理发生在编译之后、发布之前（构建失败时旧版仍在），且版本号在清理**之前**确定，同日再发仍追加序号、不复用已删的版本号；GHCR 上的旧版本镜像标签不受影响
+- **版本号** = 日期 + 被发布提交的短 SHA（`vYYYY.MM.DD.<短SHA>`，日期取东八区），如 `v2026.10.02.9f2c767`。同一天多次发布天然不重号，且从版本号可直接反查 commit
+- **只保留最新一版**：每次发版前自动删除所有旧 Release 及其 git 标签，仓库始终只有一个 Release。清理发生在编译之后、发布之前（构建失败时旧版仍在）；版本号含 commit 短 SHA、天然唯一，清理不会引起版本号复用；GHCR 上的旧版本镜像标签不受影响
 - 整个发版动作无需人工介入：算版本号 → 建 tag → 交叉编译 6 个平台 → 把 `config.json` 一并打包 → 用同一版本号重建 GHCR 镜像（amd64 / arm64）→ 创建 Release（含 `checksums.txt`）
 - **只想跑 CI、不发版**：让提交标题以 `[skip release]` 开头即可（锚定标题，写在正文里不影响）。只改 `README.md` / `LICENSE` 的提交本来就不会触发 CI，因此也不会发版
 - 需要补发历史版本或指定版本号时，仍可手动打标签（走同一套流程）：
 
 ```bash
-git tag v2026.10.02 && git push origin v2026.10.02
+git tag v2026.10.02.9f2c767 && git push origin v2026.10.02.9f2c767
 ```
 
-镜像标签与 Release 一一对应：`latest` 跟随 `main` 最新一次成功发版，版本标签形如 `ghcr.io/realkiro/cfnb-go:2026.10.02`。**标签与镜像内的版本号严格一致**，可直接自证：
+镜像标签与 Release 一一对应：`latest` 跟随 `main` 最新一次成功发版，版本标签形如 `ghcr.io/realkiro/cfnb-go:2026.10.02.9f2c767`（日期 + 提交短 SHA）。**标签与镜像内的版本号严格一致**，可直接自证：
 
 ```bash
-docker run --rm --entrypoint /app/cfnb ghcr.io/realkiro/cfnb-go:2026.10.02 --version
-# cfnb-go 2026.10.02
+docker run --rm --entrypoint /app/cfnb ghcr.io/realkiro/cfnb-go:2026.10.02.9f2c767 --version
+# cfnb-go 2026.10.02.9f2c767
 ```
 
 （`main` 每次推送还会额外产出 `sha-<短SHA>` 镜像，用于按 commit 反查；该标签内部版本即为 `sha-<短SHA>`。）
@@ -202,7 +202,7 @@ docker run -d --name cfnb-go \
 
 | 项 | 说明 |
 | :--- | :--- |
-| 镜像地址 | 默认 `ghcr.io/realkiro/cfnb-go:latest`（另有日期标签如 `2026.10.01` 与 `sha-xxxxxxx` 精确提交标签） |
+| 镜像地址 | 默认 `ghcr.io/realkiro/cfnb-go:latest`（另有版本标签如 `2026.10.02.9f2c767`——日期 + 提交短 SHA，以及 `sha-xxxxxxx` 精确提交标签） |
 | 镜像来源 | 环境变量 `CFNB_IMAGE` 注入；**未设置时回退为官方镜像 `ghcr.io/realkiro/cfnb-go:latest`**，fork 用户可在 `deploy/.env` 里改成自己的地址 |
 | 拉取策略 | 环境变量 `CFNB_PULL_POLICY`，默认 `missing`（本地无缓存时才拉取）。可选 `always`（每次 up 检查更新）/ `never`（只用本地已有镜像，不联网） |
 | 镜像构建 | **只由 CI 构建**：compose 无 `build` 段，本地不编译镜像。需要自定义镜像时请 fork 后改代码，由 CI 推送你自己的 GHCR（`deploy/Dockerfile` 仅被 CI 引用） |

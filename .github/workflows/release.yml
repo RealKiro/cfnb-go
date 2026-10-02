@@ -14,7 +14,8 @@ name: Release
 #      只改指向、不重新构建，而 CI 构建时注入的是 sha-<短SHA>（那一刻还不知道本次的
 #      日期版本号），于是镜像里 `cfnb --version` 永远显示 sha-xxx，与 :<日期版本> 对不上。
 #      改成用版本号重建后，标签与镜像内版本严格一致，并由「产物自证」步骤兜住回归。
-#   3. 版本号取当天日期，同日再发自动追加序号：v2026.10.01 -> v2026.10.01.2 -> .3
+#   3. 版本号 = 日期（东八区）+ 被发布提交的短 SHA（如 v2026.10.02.9f2c767）：
+#      天然唯一、从版本号可直接反查 commit，无需维护同日递增序号。
 #   4. tag 由本工作流用 GITHUB_TOKEN 创建并推送。GITHUB_TOKEN 触发的 push 事件
 #      不会再触发新工作流，因此不会与下面的 push:tags 形成递归发布。
 #   5. 校验「日期标签不能用 type=semver」的坑见 ci.yml 的 metadata 注释：
@@ -35,7 +36,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "发布标签（如 v2026.10.02）；留空则按当天日期自动递增"
+        description: "发布标签（如 v2026.10.02.9f2c767）；留空则按「日期+短SHA」自动生成"
         required: false
         type: string
 
@@ -84,20 +85,10 @@ jobs:
           elif [ -n "${{ inputs.tag || '' }}" ]; then
             TAG="${{ inputs.tag }}"
           else
-            # 自动通道：按当天日期（东八区，与使用者的「今天」一致）生成标签
-            BASE="v$(TZ=Asia/Shanghai date +%Y.%m.%d)"
-            # 查远端已存在的同日标签：v2026.10.01（首版）/ v2026.10.01.2 / .3 ...
-            EXISTING=$(git ls-remote --tags --refs origin "refs/tags/${BASE}*" | sed 's#.*refs/tags/##')
-            MAX=0
-            for t in $EXISTING; do
-              case "$t" in
-                "$BASE")   n=1 ;;
-                "$BASE".*) n="${t##*.}" ;;
-                *)         continue ;;
-              esac
-              if [ "$n" -eq "$n" ] 2>/dev/null && [ "$n" -gt "$MAX" ]; then MAX="$n"; fi
-            done
-            if [ "$MAX" -eq 0 ]; then TAG="$BASE"; else TAG="${BASE}.$((MAX + 1))"; fi
+            # 自动通道：日期（东八区，与使用者的「今天」一致）+ 被发布提交的短 SHA。
+            # 同一天多次发布也天然不重号，且从版本号可直接反查 commit，
+            # 因此不再查询已有同日标签做递增。
+            TAG="v$(TZ=Asia/Shanghai date +%Y.%m.%d).$(git rev-parse --short "${TARGET_SHA}")"
           fi
 
           # 手动指定/重复发布时标签可能已存在，此时直接复用它而不是报错
@@ -293,8 +284,8 @@ jobs:
         #   1) 删除除本次 TAG 外的所有 GitHub Release；
         #   2) 删除除本次 TAG 外的所有 v* git 标签（删 Release 不会连带删标签）。
         # 放在「发布」步骤之前、编译与镜像构建之后：前面任何环节失败时旧版仍在，
-        # 不会落得一个 Release 都没有。版本号递增在更早的「确定版本标签」里已完成，
-        # 因此同日再发仍追加序号、不复用已删版本号（checksums 不会张冠李戴）。
+        # 不会落得一个 Release 都没有。版本号含被发布提交的短 SHA、天然唯一，
+        # 清理旧版不存在版本号复用问题（checksums 不会张冠李戴）。
         # GHCR 上的旧版本镜像标签不受此步影响。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
