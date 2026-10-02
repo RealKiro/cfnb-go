@@ -237,7 +237,7 @@ docker run -d --name cfnb-go \
 
 1. **数据源的性质**：Cloudflare 官方 anycast IP 段（`cfipv4db`、社区优选域名等）**非常稳定**，几周不变是常态；第三方反代 IP（如 `ipdb bestproxy`）随时可能下线，这类源才需要更勤地复核。
 2. **DNS 生效速度**：本工具写 Cloudflare DNS 记录时用的 `CF_TTL` 默认 **60 秒**，客户端重新解析即可拿到新 IP——所以在 DNS 层面「更勤」确实能更快生效。但它救不了已经建立的连接，改不了「进行中的会话会断」这件事。
-3. **单轮耗时是间隔之外的**：`RUN_INTERVAL` 是**跑完一轮后 sleep 的时长**，真实周期 = 单轮耗时 + 间隔。完整一轮要抓全部数据源（默认 7 个源、去重后约 1.6 万条）并依次跑 TCP / HTTP / 带宽测速，本身就要几十秒到几分钟。
+3. **单轮耗时是间隔之外的**：`RUN_INTERVAL` 是**跑完一轮后 sleep 的时长**，真实周期 = 单轮耗时 + 间隔。完整一轮要抓全部数据源（默认 8 个源、去重后约 1.6 万条）并依次跑 TCP / HTTP / 带宽测速，本身就要几十秒到几分钟。
 4. **不建议低于 5 分钟**：高频运行会持续占用带宽和 CPU；上游源站（`raw.githubusercontent.com` 等）与被调用的可用性 API 也可能因此限流。
 5. **GitHub 同步会留下提交记录**：开启自动同步后，每轮运行都会向仓库提交一次 `ip.txt`，间隔越短提交历史越密。
 
@@ -271,7 +271,7 @@ docker run -d --name cfnb-go \
 | `DNS_UPDATE_TARGET_COUNT` | `15` | DNS 写入的最大记录数 |
 | `ENABLE_WXPUSHER` | `true` | WxPusher 微信通知 |
 | `MAX_WORKERS` / `BANDWIDTH_WORKERS` | `300` / `3` | 并发控制（低配设备请调小） |
-| `ADDITIONAL_SOURCES` | 7 个源 | 节点数据源列表，每项 `{ "url": ..., "enabled": true }`。**多源结果按 `ip:port` 自动去重**，保留先出现的节点，因此靠前的源优先级更高。支持两种写法，见下方《数据源写法》 |
+| `ADDITIONAL_SOURCES` | 8 个源 | 节点数据源列表，每项 `{ "url": ..., "enabled": true }`。**多源结果按 `ip:port` 自动去重**，保留先出现的节点，因此靠前的源优先级更高。支持两种写法，见下方《数据源写法》 |
 | `BARE_IP_DEFAULT_PORT` | `443` | 数据源只返回裸 IP（无端口）时补的端口；`0` = 不补并丢弃这类节点。`ipdb.api.030101.xyz`、域名直填源等都依赖此项 |
 | `KEEP_UNLABELED_NODES` | `true` | 是否保留「无国家标签」的节点。见下方《为什么必须开启 `KEEP_UNLABELED_NODES`》 |
 
@@ -282,11 +282,11 @@ docker run -d --name cfnb-go \
 | 写法 | 处理方式 | 例子 |
 | :--- | :--- | :--- |
 | 以 `http://` / `https://` 开头 | 按 URL 拉取，自适应解析纯文本 / JSON（标准代码、中文名、emoji 国旗均可） | `"https://zip.cm.edu.kg/all.txt"` |
-| 其余（域名 / 裸 IP） | **直填**：对该域名做 DNS 解析，取其**全部 A 记录**当候选；IP 形式则原样使用 | `"cf.090227.xyz"`、`"cmcc.090227.xyz:8443"`、`"1.2.3.4"` |
+| 其余（域名 / 裸 IP） | **直填**：对该域名做 DNS 解析，取其**全部 A 记录**当候选；IP 形式则原样使用 | `"cf.090227.xyz"`、`"cf.877774.xyz:8443"`、`"1.2.3.4"` |
 
 直填源每次解析都可能得到不同的一批地址（社区优选域名背后是维护者动态更新的 IP），端口取源内自带端口或 `BARE_IP_DEFAULT_PORT`。
 
-当前默认的 7 个源：
+当前默认的 8 个源：
 
 | 源 | 类型 | 说明 |
 | :--- | :--- | :--- |
@@ -296,7 +296,8 @@ docker run -d --name cfnb-go \
 | `yuanxiawan/cfipv4db` | URL（经镜像） | 韩国 VPS 扫描的高分 IP，更新频繁，**全是 CF 官方 anycast IP**。经 `ghproxy.net` 中转，原因见下方《GitHub 源为什么走镜像》 |
 | `cmliu/WorkerVless2sub` | URL（经镜像） | 整理过的优选地址列表，带国家标签。同上，经 `ghproxy.net` 中转 |
 | `cf.090227.xyz` | 域名直填 | 老牌优选域名，三网自适应 |
-| `cmcc.090227.xyz` | 域名直填 | 同上，移动线路专门优化 |
+| `cf.877774.xyz` | 域名直填 | 社区优选域名，解析出约 26 条 CF 官方 anycast IP（`104.16.148.x` / `104.16.149.x` 段） |
+| `saas.sin.fan` | 域名直填 | 社区优选域名（Singg CDN），当前仅 1 条 A 记录，净贡献小但稳定 |
 
 ### 为什么必须开启 `KEEP_UNLABELED_NODES`
 
@@ -664,7 +665,7 @@ push main ──> ci.yml ──> 完成（success）──> release.yml
 - 节点数据源 & 检测 API：[cmliussss](https://github.com/cmliussss)
 - 高分 IP 列表：[yuanxiawan/cfipv4db](https://github.com/yuanxiawan/cfipv4db)
 - 优选地址列表：[cmliu/WorkerVless2sub](https://github.com/cmliu/WorkerVless2sub)
-- 社区优选域名：`cf.090227.xyz` / `cmcc.090227.xyz`（[090227.xyz](https://090227.xyz)）
+- 社区优选域名：`cf.090227.xyz`（[090227.xyz](https://090227.xyz)）、`cf.877774.xyz`、`saas.sin.fan`
 - IP 风险检测 API：[ipapi.is](https://ipapi.is/)
 - IP 地区校准：[ipinfo.io](https://ipinfo.io/)
 - 微信通知服务：[WxPusher](https://wxpusher.zjiecode.com/)
