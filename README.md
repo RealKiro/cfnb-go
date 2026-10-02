@@ -295,9 +295,9 @@ docker run -d --name cfnb-go \
 | `ipdb.api.030101.xyz?type=bestproxy` | URL | 第三方反代 IP（`type=bestcf` 则为 CF 官方 IP） |
 | `yuanxiawan/cfipv4db` | URL（经镜像） | 韩国 VPS 扫描的高分 IP，更新频繁，**全是 CF 官方 anycast IP**。经 `ghproxy.net` 中转，原因见下方《GitHub 源为什么走镜像》 |
 | `cmliu/WorkerVless2sub` | URL（经镜像） | 整理过的优选地址列表，带国家标签。同上，经 `ghproxy.net` 中转 |
-| `cf.090227.xyz` | 域名直填 | 老牌优选域名，三网自适应 |
-| `cf.877774.xyz` | 域名直填 | 社区优选域名，解析出约 26 条 CF 官方 anycast IP（`104.16.148.x` / `104.16.149.x` 段） |
-| `saas.sin.fan` | 域名直填 | 社区优选域名（Singg CDN），当前仅 1 条 A 记录，净贡献小但稳定 |
+| [`cf.090227.xyz`](https://cf.090227.xyz) | 域名直填 | 老牌优选域名，三网自适应 |
+| [`cf.877774.xyz`](https://cf.877774.xyz) | 域名直填 | 社区优选域名，解析出约 26 条 CF 官方 anycast IP（`104.16.148.x` / `104.16.149.x` 段） |
+| [`saas.sin.fan`](https://saas.sin.fan) | 域名直填 | 社区优选域名（Singg CDN），当前仅 1 条 A 记录，净贡献小但稳定 |
 
 ### 为什么必须开启 `KEEP_UNLABELED_NODES`
 
@@ -665,7 +665,7 @@ push main ──> ci.yml ──> 完成（success）──> release.yml
 - 节点数据源 & 检测 API：[cmliussss](https://github.com/cmliussss)
 - 高分 IP 列表：[yuanxiawan/cfipv4db](https://github.com/yuanxiawan/cfipv4db)
 - 优选地址列表：[cmliu/WorkerVless2sub](https://github.com/cmliu/WorkerVless2sub)
-- 社区优选域名：`cf.090227.xyz`（[090227.xyz](https://090227.xyz)）、`cf.877774.xyz`、`saas.sin.fan`
+- 社区优选域名：[cf.090227.xyz](https://cf.090227.xyz)（[090227.xyz](https://090227.xyz)）、[cf.877774.xyz](https://cf.877774.xyz)、[saas.sin.fan](https://saas.sin.fan)
 - IP 风险检测 API：[ipapi.is](https://ipapi.is/)
 - IP 地区校准：[ipinfo.io](https://ipinfo.io/)
 - 微信通知服务：[WxPusher](https://wxpusher.zjiecode.com/)
