@@ -288,6 +288,37 @@ jobs:
           所有产物均由 GitHub Actions 在 CI 全绿后自动构建，无本地构建介入。
           EOF
 
+      - name: 清理旧版 Release 与标签（只保留本次）
+        # 发新版前把旧版全部删除，仓库始终只保留最新一个 Release：
+        #   1) 删除除本次 TAG 外的所有 GitHub Release；
+        #   2) 删除除本次 TAG 外的所有 v* git 标签（删 Release 不会连带删标签）。
+        # 放在「发布」步骤之前、编译与镜像构建之后：前面任何环节失败时旧版仍在，
+        # 不会落得一个 Release 都没有。版本号递增在更早的「确定版本标签」里已完成，
+        # 因此同日再发仍追加序号、不复用已删版本号（checksums 不会张冠李戴）。
+        # GHCR 上的旧版本镜像标签不受此步影响。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          API="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          AUTH="Authorization: Bearer ${GITHUB_TOKEN}"
+          KEEP="${{ steps.tag.outputs.value }}"
+
+          IDS=$(curl -fsS -H "$AUTH" "${API}/releases?per_page=100" \
+                | jq -r --arg keep "${KEEP}" '.[] | select(.tag_name != $keep) | .id')
+          for id in ${IDS}; do
+            curl -fsS -X DELETE -H "$AUTH" "${API}/releases/${id}"
+            echo "已删除 Release id=${id}"
+          done
+          echo "Release 清理完成，保留 ${KEEP}"
+
+          TAGS=$(git ls-remote --tags --refs origin 'refs/tags/v*' \
+                | sed 's#.*refs/tags/##' | grep -vxF "${KEEP}" || true)
+          for t in ${TAGS}; do
+            git push origin --delete "refs/tags/${t}"
+            echo "已删除标签 ${t}"
+          done
+
       - name: 发布到 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
