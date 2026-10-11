@@ -247,6 +247,54 @@ docker run -d --name cfnb-go \
 
 ---
 
+## 🔀 多实例部署：多台机器 / 多个域名同时优选
+
+典型场景：公司、家里各一台设备，都跑着 Cloudflare Tunnel，希望两台**同时**跑优选——公司实例的优选结果服务 `meet.example1.com`，家里实例服务 `www.example1.com` 与 `edu.example1.com`。**可以，且互不干扰**，核心前提只有一个：**各写各的记录名**。
+
+> 📖 本章的背景架构（Tunnel + Cloudflare for SaaS 回退源 + 优选入口）完整原理与排错，见[《Cloudflare Tunnel + SaaS 优选加速完整指南》](https://www.aino.fun/archives/Cloudflare_Tunnel_SaaS_Guide)。
+
+### 为什么能同时跑
+
+- DNS 更新按「**zone + 记录类型 + 记录名**」精确圈定后原子替换（查出同名同类型记录 → 全删 → 写入新一批）。只要两台的 `CF_DNS_RECORD_NAME` 不同，就永远各写各的记录——同一个 Cloudflare 账号、同一枚 API Token 都不冲突。
+- 单实例锁 `.run.lock` 是**本机文件锁**，只防「同一台机器上定时任务重入」；Docker 部署时每个容器有各自的 `/app`，锁天然隔离，跨机器毫无关系。
+- 唯一的硬限制：`CF_DNS_RECORD_NAME` 是单值——**一份 config.json 一轮只接管一条记录名**。
+
+### 推荐拓扑：每地一个实例，各管一条「优选入口」
+
+两地各一个辅助域名（各自的 SaaS zone 与回退源，见下方注意事项 2），主域名只放业务记录：
+
+| | 公司实例 | 家里实例 |
+| :--- | :--- | :--- |
+| `CF_ZONE_ID` | `example2.com`（公司辅助域名） | `example3.com`（家里辅助域名） |
+| `CF_DNS_RECORD_NAME` | `ip-co.example2.com` | `ip-hm.example3.com` |
+| 业务记录（主域名下，灰云 CNAME → 优选入口） | `meet.example1.com` | `www.example1.com`、`edu.example1.com` |
+
+- **多个业务域名共用一条入口**：`www` 与 `edu` 都指向 `ip-hm`，家里**一个实例**就同时服务两个域名。业务记录一次配好、之后永不维护——这正是优选入口单独占用一个子域的价值：工具只碰 `ip`，换优选、失效回滚都不动业务层。
+- `CF_API_TOKEN` 可以两台共用一枚（对两个辅助 zone 都有 DNS 编辑权限即可），也可以按 zone 各发一枚最小权限的。
+- 两台各自一份 `deploy/` 目录（各自的 `config.json` / `.env`），`RUN_INTERVAL`、通知、同步配置都互不影响。
+
+### 备选：业务记录直挂优选（省掉中间层）
+
+`CF_DNS_RECORD_NAME` 直接写业务域名本身（如 `meet.example1.com`，此时 `CF_ZONE_ID` 填主域名的 zone）：
+
+- 每个业务域名各需一个实例：家里两个域名就要跑**两个容器**——同一台机器跑多实例时，给每个容器各自一份 `config.json` 与 `ip.txt` 挂载（不同宿主目录、各起一套 compose），锁与结果文件互不相干；
+- ⚠️ 工具只清理**同名同类型**的旧记录：业务域名上现存的 CNAME（添加 Public Hostname 时自动生成的橙云记录）必须先手动删掉，否则新 A 记录与 CNAME 并存，批量写入会失败；
+- 代价：换优选动的是业务记录本身，改错即业务中断。单服务图省事可用，多服务建议回到上面的中间层方案。
+
+### 端口与优选无关
+
+A 记录只决定「连到哪台 Cloudflare 边缘」；「`www` → 8090、`edu` → 8091」由 **Tunnel 的 Public Hostname 规则**（按 Host 头分流到内网端口）决定。优选工具不需要、也不应该知道端口——DNS 记录里也没有地方承载端口。
+
+### 注意事项
+
+1. **两台绝不能写同一条记录名**：会每轮互相覆盖（后写者赢），且 A 地网络优选出的 IP 拿给 B 地用户可能反而更差——两地运营商路径不同，「优选」从来只对测速时所在的出口网络有效。按位置 / 域名拆分记录名正是解法。
+2. **前提：回退源与自定义主机名已按位置拆开**（Cloudflare for SaaS 架构）。优选只决定「连到哪个边缘」，流量进哪条隧道由业务主机名注册在哪个 SaaS zone（其回退源指向哪条隧道）决定——两条隧道即需要两个各自的辅助域名 zone。另请确认两台 cloudflared 是**两条独立隧道**，而不是同一条隧道的两个 connector：后者流量不按位置分流，请求可能命中任意一台。
+3. `FILTER_ASN_ENABLED: true` 建议每个实例都开：优选入口必须是 Cloudflare 官方 IP，业务主机名的解析链才能落在 CF 边缘、自定义主机名状态才能保持 Active（原理见配置说明中 `FILTER_ASN_ENABLED` 的说明）。
+4. **GitHub 同步**多实例都开时，`GITHUB_SYNC_PATH` 必须分开（如 `ip-co.txt` / `ip-hm.txt`），否则每轮互相覆盖提交；没有订阅需求就直接 `GITHUB_SYNC_MAX_RETRIES: 0` 关掉。
+5. `RUN_INTERVAL` 各实例独立取值：实时音视频（Jitsi / WebRTC 类）所在实例按《更新频率建议》拉到 12~24 小时，网页 / API 加速 15~30 分钟。
+
+---
+
 ## ⚙️ 配置说明
 
 全部参数位于 `deploy/app/config.json`，文件内已带逐项注释。常用项速查：
@@ -659,6 +707,7 @@ push main ──> ci.yml ──> 完成（success）──> release.yml
 10. **代理环境影响？** 与 Python 版一致：TCP / HTTP / 测速阶段强制直连，API 类请求（抓取、可用性、通知、GitHub）跟随系统代理；`FORCE_DIRECT: true` 可全部直连。
 11. **某个数据源明明有数据，却显示「解析出 0 个节点」？** 日志会紧接着打印 HTTP 状态、`Content-Type`、字节数和响应开头片段，照那段就能判断是空响应、HTML 拦截页还是格式不匹配（见[数据源解析出 0 个节点怎么办](#数据源解析出-0-个节点怎么办)）。程序也会把它当作抓取失败自动重试 `FETCH_MAX_RETRIES` 次，源站单次抖动不会再让整条源白跑一轮。
 12. **日志里的进度条变成了十几行？** 这是刻意的：`docker logs` / 文件 / 日志查看器不是终端，`\r` 原地刷新会把几十帧挤成一行，所以检测到非终端时改为每 10% 打一行。想要回终端那样的单行刷新，用 `docker compose logs -f` 之外的方式（如 `docker attach`）或本地直接运行即可。
+13. **两台机器（如公司 + 家里）能同时跑优选吗？** 能。各写各的 `CF_DNS_RECORD_NAME` 即互不干扰（DNS 更新按 zone + 记录类型 + 记录名精确圈定，同名记录才会被替换），单实例锁只作用于本机。完整拓扑与注意事项见《多实例部署：多台机器 / 多个域名同时优选》一章。
 
 ---
 
