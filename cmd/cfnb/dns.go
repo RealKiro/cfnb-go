@@ -107,7 +107,7 @@ func extractRiskScore(v any) float64 {
 // ==================== Cloudflare DNS 批量更新 ====================
 
 // batchUpdateCloudflareDNS 将优选结果原子批量更新到 Cloudflare DNS。
-// 仅作用于 DNS 环节的过滤：端口(443) → IPv6 落地 → 国家黑名单 → IP 风险等级（带回退）
+// 仅作用于 DNS 环节的过滤：端口(443) → IPv6 落地 → 国家黑名单 → ASN(官方网段) → IP 风险等级（带回退）
 //
 // 候选顺序以 finalSelected 优先，即与 ip.txt 的排列（加权分降序）一致；其余
 // 带宽测速通过节点按速度降序跟在后面，作为补位池。此前该循环直接遍历
@@ -155,6 +155,7 @@ func batchUpdateCloudflareDNS(
 		portDropped []string
 		ipv6Dropped []string
 		ctryDropped []string
+		asnDropped  []string
 		riskDropped []string
 	)
 
@@ -234,6 +235,16 @@ func batchUpdateCloudflareDNS(
 				}
 			}
 
+			// ASN（Cloudflare 官方网段）过滤
+			// 优选目标必须是官方 anycast IP：第三方反代机即使 TCP 可达、测速全绿，
+			// 其 SNI 行为（是否透传自定义域名）也不受控制，实测会造成业务域名
+			// ERR_CONNECTION_TIMED_OUT；且自定义主机名校验不认它们（状态报「已移动」）。
+			// 对 A 与 TXT 两种记录类型都生效——IP 的身份与记录类型无关。
+			if cfg.FilterASNEnabled && !isCloudflareIP(ip) {
+				asnDropped = append(asnDropped, nodeStr)
+				continue
+			}
+
 			if cfg.DNSIPRiskFilterEnabled {
 				riskFallbackIP = append(riskFallbackIP, ip)
 				riskFallbackNd = append(riskFallbackNd, nodeStr)
@@ -287,6 +298,9 @@ func batchUpdateCloudflareDNS(
 		if cfg.FilterBlockedCountriesEnabled {
 			parts = append(parts, fmt.Sprintf("DNS黑名单过滤(%d个)", len(ctryDropped)))
 		}
+		if cfg.FilterASNEnabled {
+			parts = append(parts, fmt.Sprintf("非Cloudflare网段过滤(%d个)", len(asnDropped)))
+		}
 		if cfg.DNSIPRiskFilterEnabled && len(riskDropped) > 0 {
 			parts = append(parts, fmt.Sprintf("风险等级过滤(%d个)", len(riskDropped)))
 		}
@@ -323,6 +337,9 @@ func batchUpdateCloudflareDNS(
 		if cfg.FilterBlockedCountriesEnabled {
 			logFilterDetail("国家黑名单", ctryDropped)
 		}
+		if cfg.FilterASNEnabled {
+			logFilterDetail("非 Cloudflare 网段", asnDropped)
+		}
 		if cfg.DNSIPRiskFilterEnabled {
 			logFilterDetail("风险等级", riskDropped)
 		}
@@ -331,12 +348,21 @@ func batchUpdateCloudflareDNS(
 	// ---------- 无候选时降级 ----------
 	// 降级源是 finalSelected（node 形式，带端口），而非此前的裸 IP 列表：
 	// 后者在 TXT 模式缺端口信息、只能整段放弃，现在两种记录类型都能降级出结果
+	// 注意：降级路径同样执行 ASN 过滤——否则全部候选被 ASN 闸拦下后，会把
+	// 未过滤的优选名单原样写进 DNS，身份检查就被绕过了
 	if len(dnsContentList) == 0 {
 		if len(finalSelected) > 0 {
-			logf("未能从带宽测速结果构建 DNS 列表，降级使用最终优选名单（%s）。", cfg.OutputFile)
+			if cfg.FilterASNEnabled {
+				logf("带宽测速候选全部被 ASN 过滤拦下，对最终优选名单（%s）降级前同样执行网段校验。", cfg.OutputFile)
+			} else {
+				logf("未能从带宽测速结果构建 DNS 列表，降级使用最终优选名单（%s）。", cfg.OutputFile)
+			}
 			for _, node := range finalSelected {
 				ip, rest, ok := strings.Cut(node, ":")
 				if !ok {
+					continue
+				}
+				if cfg.FilterASNEnabled && !isCloudflareIP(ip) {
 					continue
 				}
 				if recordType == "A" {
@@ -348,7 +374,7 @@ func batchUpdateCloudflareDNS(
 				dnsNodeList = append(dnsNodeList, node)
 			}
 			if len(dnsContentList) == 0 {
-				logf("最终优选名单中没有可用于 %s 记录的节点，DNS 更新跳过。", recordType)
+				logf("最终优选名单中没有可用于 %s 记录的节点（或全部未通过 ASN 网段校验），DNS 更新跳过。", recordType)
 				return nil
 			}
 		} else {

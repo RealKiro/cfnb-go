@@ -44,6 +44,7 @@
 | 🧩 **多源自适应聚合** | 支持任意格式（标准代码 / 中文名 / emoji 国旗 / JSON），裸 IP 自动补默认端口，`IP # 标签` 这类带空格的写法也能识别；源可直接写 URL，也可写 **域名**（自动 DNS 解析取 A 记录）；多源合并按 `ip:port` 去重，靠前的源优先 |
 | ⚙️ **前置过滤（按序执行）** | TCP 测试前：端口过滤 → 黑名单过滤 → 白名单过滤 |
 | 🚫 **DNS 黑名单 / IPv6 落地过滤 / IP 风险等级过滤** | 仅作用于 DNS 更新环节，风险过滤失败自动回退 |
+| 🪪 **Cloudflare 官方网段校验（可选，`FILTER_ASN_ENABLED`）** | 本地 CIDR 匹配 AS13335 公布网段，过滤第三方反代/聚合源的非官方 IP——无外部 API、无 token |
 | 🗺️ **IP 地区校准** | 基于 ipinfo.io 并发查询，Token 轮换 + 限速 + 缓存复用 |
 | ☁️ **Cloudflare DNS 更新** | 原子批量替换同名 A / TXT 记录 |
 | 📬 **微信实时通知** | 集成 WxPusher，异常 / 结果推送 |
@@ -270,6 +271,7 @@ docker run -d --name cfnb-go \
 | `HTTP_LATENCY_WEIGHT` / `JITTER_WEIGHT` / `SPEED_WEIGHT` | `3.0` | 综合排序权重 |
 | `CF_ENABLED` / `DNS_RECORD_TYPE` | `true` / `TXT` | Cloudflare DNS 自动更新 |
 | `DNS_UPDATE_TARGET_COUNT` | `15` | DNS 写入的最大记录数 |
+| `FILTER_ASN_ENABLED` | `false` | **DNS 写入前**只保留 Cloudflare 官方网段（AS13335）的 IP，第三方反代/聚合源混入的非官方 IP（Azure、DigitalOcean 之类）全部剔除。本地 CIDR 匹配官方公布网段表，无外部 API、无 token。这类 IP 即使测速全绿，SNI 行为也不受控制，实测会造成业务域名超时；SaaS 自定义主机名用户建议开启 |
 | `ENABLE_WXPUSHER` | `true` | WxPusher 微信通知 |
 | `MAX_WORKERS` / `BANDWIDTH_WORKERS` | `300` / `3` | 并发控制（低配设备请调小） |
 | `ADDITIONAL_SOURCES` | 8 个源 | 节点数据源列表，每项 `{ "url": ..., "enabled": true }`。**多源结果按 `ip:port` 自动去重**，保留先出现的节点，因此靠前的源优先级更高。支持两种写法，见下方《数据源写法》 |

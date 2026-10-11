@@ -271,6 +271,9 @@
     "DNS_UPDATE_TARGET_COUNT": 15,
     "_comment_DNS_UPDATE_TARGET_COUNT": "DNS 更新时写入的最大 IP 数量，独立于筛选模式",
 
+    "FILTER_ASN_ENABLED": false,
+    "_comment_FILTER_ASN_ENABLED": "【DNS 写入前】是否只保留 Cloudflare 官方网段（AS13335）的 IP。开启后，第三方反代/聚合源混入的非官方 IP（Azure、DigitalOcean 之类）全部剔除——这类 IP 即使测速全绿，SNI 行为也不受控制（是否透传自定义域名取决于第三方），实测会造成业务域名 ERR_CONNECTION_TIMED_OUT，且 Cloudflare 自定义主机名校验不认它们（状态报「已移动」）。本地 CIDR 匹配实现（官方公布网段表），无外部 API、无 token。默认 false 保持既有行为；本方案（SaaS 自定义主机名）用户建议开启",
+
     "BANDWIDTH_SIZE_MB": 1.0,
     "_comment_BANDWIDTH_SIZE_MB": "带宽测速下载文件大小（MB）",
 

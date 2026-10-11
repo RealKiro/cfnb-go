@@ -156,6 +156,15 @@ type Config struct {
 	DNSIPRiskMaxLevel             string   `json:"DNS_IP_RISK_MAX_LEVEL"`
 	DNSUpdateTargetCount          int      `json:"DNS_UPDATE_TARGET_COUNT"`
 
+	// ---------- DNS 写入前 ASN（官方网段）过滤 ----------
+	// 开启后仅保留属于 Cloudflare 官方公布网段（AS13335）的 IP，非官方的
+	// 第三方反代/聚合源 IP（Azure、DigitalOcean 之类）全部剔除。这类 IP 即使
+	// 测速全绿，其 SNI 行为也不受控制（是否透传自定义域名取决于第三方），
+	// 实测会造成业务域名 ERR_CONNECTION_TIMED_OUT；且 Cloudflare 自定义主机名
+	// 校验不认它们（主机名状态报「已移动」）。
+	// 本地 CIDR 匹配实现，无外部 API、无 token。默认关闭，保持既有行为。
+	FilterASNEnabled bool `json:"FILTER_ASN_ENABLED"`
+
 	// ---------- 带宽测速 ----------
 	BandwidthSizeMB      float64 `json:"BANDWIDTH_SIZE_MB"`
 	BandwidthTimeout     int     `json:"BANDWIDTH_TIMEOUT"`
@@ -319,6 +328,8 @@ func defaultConfig() Config {
 		DNSIPRiskFilterEnabled: false,
 		DNSIPRiskMaxLevel:      "高风险",
 		DNSUpdateTargetCount:   15,
+
+		FilterASNEnabled: false,
 
 		BandwidthSizeMB:      1.0,
 		BandwidthTimeout:     3,
